@@ -17,13 +17,18 @@ test.describe("Phase 1D session pairing", () => {
 
     await controller.getByRole("button", { name: /Open controller/i }).click();
     await expect(controller.getByTestId("controller-session-id")).toBeVisible();
+    await expect(controller.getByTestId("viz-particles")).toBeEnabled({ timeout: 10_000 });
 
     await display.goto("/join");
     await display.getByTestId("join-code-input").fill(pairingCode!);
     await display.getByRole("button", { name: /Join as display/i }).click();
     await expect(display.getByTestId("display-visualizer")).toBeVisible({ timeout: 15_000 });
+    await expect(display.getByTestId("display-visualizer")).toHaveText(/spectrum/i);
 
     await controller.getByTestId("viz-particles").click();
+    await expect(controller.getByTestId("viz-particles")).toHaveAttribute("aria-pressed", "true", {
+      timeout: 10_000,
+    });
     await expect(display.getByTestId("display-visualizer")).toHaveText(/particles/i, {
       timeout: 15_000,
     });

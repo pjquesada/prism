@@ -2,16 +2,14 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
-  createBuiltInPresets,
   defaultParamsForVisualizer,
   type DisplayMode,
   type GuestCredential,
   type PlaybackState,
   type VisualizerId,
 } from "@prism/contracts";
-import { createThrottle } from "@prism/sync-engine";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
@@ -32,23 +30,23 @@ function subscribeNoop(): () => void {
   return () => undefined;
 }
 
-function readCredentialForSession(sessionId: string): GuestCredential | null {
+function readCredentialJson(sessionId: string): string | null {
   const cred = loadStoredCredential();
   if (!cred || cred.sessionId !== sessionId) return null;
-  return cred;
+  return JSON.stringify(cred);
 }
 
 export function ControllerSessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
-  const credential = useSyncExternalStore(
+  const credentialJson = useSyncExternalStore(
     subscribeNoop,
-    () => readCredentialForSession(sessionId),
+    () => readCredentialJson(sessionId),
     () => null,
   );
+  const credential = credentialJson ? (JSON.parse(credentialJson) as GuestCredential) : null;
   const [restoreError, setRestoreError] = useState<string | null>(null);
-  const throttle = useMemo(() => createThrottle(12), []);
 
   useEffect(() => {
     if (!credential) return;
@@ -68,16 +66,19 @@ export function ControllerSessionPanel() {
       displayMode?: DisplayMode;
       params?: Record<string, unknown>;
     }) => {
-      if (!sync.snapshot || !sync.localDeviceId) return;
-      if (!throttle()) return;
-      await client.publish({
-        type: "visual.intent",
-        sessionId,
-        deviceId: sync.localDeviceId,
-        payload: patch,
-      });
+      if (!sync.localDeviceId) return;
+      try {
+        await client.publish({
+          type: "visual.intent",
+          sessionId,
+          deviceId: sync.localDeviceId,
+          payload: patch,
+        });
+      } catch (err) {
+        setRestoreError(err instanceof Error ? `publish:${err.message}` : "broadcast_failed");
+      }
     },
-    [client, sessionId, sync.localDeviceId, sync.snapshot, throttle],
+    [client, sessionId, sync.localDeviceId],
   );
 
   const onPlaybackAnchor = useCallback(
@@ -94,7 +95,6 @@ export function ControllerSessionPanel() {
   );
 
   const isController = sync.localRole === "controller" || sync.localRole === "combined";
-  const builtins = useMemo(() => createBuiltInPresets(), []);
 
   if (!credential || restoreError === "unauthorized" || sync.connection === "unauthorized") {
     return (
@@ -162,11 +162,11 @@ export function ControllerSessionPanel() {
             }
             data-testid={`viz-${option.id}`}
             disabled={!isController}
+            aria-pressed={sync.snapshot?.preset.visualizerId === option.id}
             onClick={() => {
-              const match = builtins.find((p) => p.visualizerId === option.id);
               void publishVisual({
                 visualizerId: option.id,
-                params: match?.params ?? defaultParamsForVisualizer(option.id),
+                params: defaultParamsForVisualizer(option.id),
               });
             }}
           >

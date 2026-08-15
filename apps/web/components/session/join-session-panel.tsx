@@ -1,17 +1,26 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useState, useSyncExternalStore } from "react";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { storeCredential, useSessionClient } from "@/lib/session/use-session-client";
 
-function JoinForm() {
+function subscribeNoop(): () => void {
+  return () => undefined;
+}
+
+function readJoinCodeFromLocation(): string {
+  if (typeof window === "undefined") return "";
+  return (new URLSearchParams(window.location.search).get("code") ?? "").toUpperCase();
+}
+
+export function JoinSessionPanel() {
   const router = useRouter();
-  const search = useSearchParams();
-  const initial = (search.get("code") ?? "").toUpperCase();
   const { client, sync } = useSessionClient();
-  const [code, setCode] = useState(initial);
+  const locationCode = useSyncExternalStore(subscribeNoop, readJoinCodeFromLocation, () => "");
+  const [overrideCode, setOverrideCode] = useState<string | null>(null);
+  const code = overrideCode ?? locationCode;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +46,7 @@ function JoinForm() {
         <span className="text-sm text-prism-mist">Six-character code</span>
         <input
           value={code}
-          onChange={(event) => setCode(event.target.value.toUpperCase())}
+          onChange={(event) => setOverrideCode(event.target.value.toUpperCase())}
           maxLength={6}
           autoCapitalize="characters"
           autoCorrect="off"
@@ -71,13 +80,5 @@ function JoinForm() {
         </p>
       ) : null}
     </div>
-  );
-}
-
-export function JoinSessionPanel() {
-  return (
-    <Suspense fallback={<p className="text-prism-mist">Loading join form…</p>}>
-      <JoinForm />
-    </Suspense>
   );
 }

@@ -31,6 +31,7 @@ export class SessionClient {
   private eventSource: EventSource | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private credential: GuestCredential | null = null;
   private transport: SessionTransportKind = "memory";
@@ -172,9 +173,12 @@ export class SessionClient {
       headers: authHeaders(this.credential.token),
       body: JSON.stringify(body),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
       throw new Error(data?.error?.code ?? "broadcast_failed");
+    }
+    if (data?.message) {
+      this.applyRaw(data.message);
     }
   }
 
@@ -209,13 +213,17 @@ export class SessionClient {
     }
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
   }
 
   private connectEvents(): void {
     if (!this.credential || this.disposed) return;
+    if (this.transport === "memory") {
+      // Memory backend uses snapshot polling (SSE is unreliable across Next.js production workers).
+      return;
+    }
     if (this.transport === "supabase") {
       // Supabase Realtime channel wiring is activated when env is configured.
-      // Memory SSE remains the default local/CI transport.
     }
     const url = `/api/session/${this.credential.sessionId}/events?token=${encodeURIComponent(this.credential.token)}`;
     if (this.eventSource) this.eventSource.close();
@@ -263,12 +271,15 @@ export class SessionClient {
       es.close();
       window.setTimeout(() => {
         if (!this.disposed) this.connectEvents();
-      }, 1_200);
+      }, 2_500);
     };
   }
 
+  private snapshotInFlight = false;
+
   private async requestSnapshot(): Promise<void> {
-    if (!this.credential) return;
+    if (!this.credential || this.snapshotInFlight) return;
+    this.snapshotInFlight = true;
     try {
       const res = await fetch(`/api/session/${this.credential.sessionId}`, {
         headers: authHeaders(this.credential.token),
@@ -283,8 +294,11 @@ export class SessionClient {
         deviceId: this.credential.deviceId,
         payload: data.snapshot,
       });
+      this.patchConnection("connected");
     } catch {
       this.patchConnection("offline");
+    } finally {
+      this.snapshotInFlight = false;
     }
   }
 
@@ -292,16 +306,47 @@ export class SessionClient {
     if (!this.credential) return;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
+
+    // Memory transport: poll snapshot for multi-tab sync without SSE fanout storms.
+    this.pollTimer = setInterval(
+      () => {
+        void this.requestSnapshot();
+      },
+      this.transport === "memory" ? 1_000 : 5_000,
+    );
 
     this.heartbeatTimer = setInterval(() => {
       if (!this.credential) return;
       void fetch(`/api/session/${this.credential.sessionId}`, {
         method: "POST",
         headers: authHeaders(this.credential.token),
-      }).then((res) => {
-        if (res.status === 410) this.patchConnection("ended");
-        else if (!res.ok) this.patchConnection("reconnecting");
-      });
+      })
+        .then(async (res) => {
+          if (res.status === 410) {
+            this.patchConnection("ended");
+            return;
+          }
+          if (!res.ok) {
+            this.patchConnection("reconnecting");
+            return;
+          }
+          const data = await res.json();
+          if (data?.snapshot) {
+            this.applyRaw({
+              type: "session.snapshot",
+              seq: data.snapshot.session.seq,
+              sentAt: new Date().toISOString(),
+              sessionId: data.snapshot.session.id,
+              deviceId: this.credential!.deviceId,
+              payload: data.snapshot,
+            });
+            this.patchConnection("connected");
+          }
+        })
+        .catch(() => {
+          this.patchConnection("offline");
+        });
     }, HEARTBEAT_INTERVAL_MS);
 
     this.pingTimer = setInterval(() => {

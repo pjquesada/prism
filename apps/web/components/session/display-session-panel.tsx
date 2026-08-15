@@ -13,21 +13,22 @@ function subscribeNoop(): () => void {
   return () => undefined;
 }
 
-function readCredentialForSession(sessionId: string): GuestCredential | null {
+function readCredentialJson(sessionId: string): string | null {
   const cred = loadStoredCredential();
   if (!cred || cred.sessionId !== sessionId) return null;
-  return cred;
+  return JSON.stringify(cred);
 }
 
 export function DisplaySessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
-  const credential = useSyncExternalStore(
+  const credentialJson = useSyncExternalStore(
     subscribeNoop,
-    () => readCredentialForSession(sessionId),
+    () => readCredentialJson(sessionId),
     () => null,
   );
+  const credential = credentialJson ? (JSON.parse(credentialJson) as GuestCredential) : null;
   const [restoreError, setRestoreError] = useState<string | null>(null);
 
   useEffect(() => {
