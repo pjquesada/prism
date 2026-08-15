@@ -1,0 +1,25 @@
+{
+  "name": "@prism/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tsconfig/nextjs.json": "./tsconfig/nextjs.json",
+    "./tsconfig/library.json": "./tsconfig/library.json",
+    "./eslint/base": "./eslint/base.js",
+    "./tailwind/preset": "./tailwind/preset.ts"
+  },
+  "files": [
+    "tsconfig",
+    "eslint",
+    "tailwind"
+  ],
+  "dependencies": {
+    "@eslint/js": "^9.33.0",
+    "typescript-eslint": "^8.39.1"
+  },
+  "peerDependencies": {
+    "eslint": "^9.33.0"
+  }
+}

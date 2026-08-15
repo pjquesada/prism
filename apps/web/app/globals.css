@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+@theme {
+  --color-prism-ink: #061018;
+  --color-prism-deep: #0a1c28;
+  --color-prism-mist: #9eb8c4;
+  --color-prism-foam: #e6f2f5;
+  --color-prism-aurora: #2ec4b6;
+  --color-prism-ember: #e07a3d;
+  --color-prism-slate: #1a3340;
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-body);
+    color: var(--color-prism-foam);
+    background-color: var(--color-prism-ink);
+    background-image:
+      radial-gradient(ellipse 80% 60% at 18% 8%, rgba(46, 196, 182, 0.22), transparent 55%),
+      radial-gradient(ellipse 70% 50% at 92% 18%, rgba(224, 122, 61, 0.14), transparent 50%),
+      linear-gradient(165deg, #061018 0%, #0a1c28 45%, #0d2430 100%);
+    background-attachment: fixed;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-prism-aurora);
+    outline-offset: 3px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .prism-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    padding: 0.7rem 1.25rem;
+    border-radius: 0.35rem;
+    font-family: var(--font-body);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    transition:
+      transform 180ms ease,
+      background-color 180ms ease,
+      border-color 180ms ease;
+  }
+
+  .prism-btn-primary {
+    border: 1px solid color-mix(in oklab, var(--color-prism-aurora) 70%, white);
+    background: color-mix(in oklab, var(--color-prism-aurora) 82%, black);
+    color: var(--color-prism-ink);
+  }
+
+  .prism-btn-primary:hover {
+    transform: translateY(-1px);
+    background: var(--color-prism-aurora);
+  }
+
+  .prism-btn-ghost {
+    border: 1px solid color-mix(in oklab, var(--color-prism-mist) 35%, transparent);
+    background: color-mix(in oklab, var(--color-prism-slate) 55%, transparent);
+    color: var(--color-prism-foam);
+  }
+
+  .prism-btn-ghost:hover {
+    border-color: color-mix(in oklab, var(--color-prism-mist) 60%, transparent);
+  }
+
+  .prism-shell {
+    position: relative;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .prism-aurora-band {
+    pointer-events: none;
+    position: absolute;
+    inset: auto -10% -20% -10%;
+    height: 55%;
+    background: radial-gradient(ellipse at center, rgba(46, 196, 182, 0.18), transparent 68%);
+    animation: prism-drift 14s ease-in-out infinite alternate;
+  }
+
+  .prism-ember-haze {
+    pointer-events: none;
+    position: absolute;
+    top: -15%;
+    right: -10%;
+    width: 48%;
+    height: 48%;
+    background: radial-gradient(circle at center, rgba(224, 122, 61, 0.16), transparent 70%);
+    animation: prism-pulse 10s ease-in-out infinite alternate;
+  }
+
+  @keyframes prism-drift {
+    from {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    to {
+      transform: translate3d(0, -3%, 0) scale(1.04);
+    }
+  }
+
+  @keyframes prism-pulse {
+    from {
+      opacity: 0.55;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0.95;
+      transform: scale(1.08);
+    }
+  }
+}
