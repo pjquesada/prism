@@ -33,9 +33,10 @@ Prism is a pnpm + Turborepo monorepo. Apps orchestrate; packages implement bound
 
 ## Runtime
 
-- **Without Supabase env:** memory session store + SSE event fanout (local/CI)
+- **Without Supabase env:** memory session store + snapshot polling (local/CI)
 - **With Supabase env:** same HTTP APIs; schema ready for service-role persistence (Realtime channel name `session:{id}`)
 - Feature frames / FFT / mic / images are never transmitted
+- Memory transport applies broadcast responses locally and polls snapshots (~1s) for multi-device sync
 
 ## Validation
 
