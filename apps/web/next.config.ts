@@ -12,6 +12,8 @@ const nextConfig: NextConfig = {
   transpilePackages: [
     "@prism/ui",
     "@prism/contracts",
+    "@prism/db",
+    "@prism/sync-engine",
     "@prism/audio-engine",
     "@prism/visual-engine",
     "@prism/visualizers",
