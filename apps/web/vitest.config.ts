@@ -7,8 +7,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    include: ["**/*.test.tsx"],
-    exclude: ["node_modules", ".next"],
+    include: ["**/*.{test,spec}.{ts,tsx}"],
+    exclude: ["node_modules", ".next", "e2e/**"],
   },
   resolve: {
     alias: {

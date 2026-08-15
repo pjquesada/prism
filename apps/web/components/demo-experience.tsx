@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { DemoTrackEngine, silentFrame, type DemoTrackEngineStatus } from "@prism/audio-engine";
 import {
   createBuiltInPresets,
@@ -19,9 +19,7 @@ import {
   createBlankPreset,
   duplicatePreset,
   listMergedPresets,
-  loadGuestPresets,
   resetPresetParams,
-  saveGuestPresets,
   updatePresetParams,
 } from "@/lib/guest-presets";
 import {
@@ -31,6 +29,7 @@ import {
   revokeArtworkUrl,
   type LocalArtworkState,
 } from "@/lib/local-artwork";
+import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
@@ -93,45 +92,46 @@ export function DemoExperience({
   const [status, setStatus] = useState<DemoTrackEngineStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [hud, setHud] = useState({ energy: 0, onset: false, bass: 0, mid: 0, high: 0 });
-
+  const [qualityMode, setQualityMode] = useState<QualityTier | "auto">("auto");
+  const [effectiveQuality, setEffectiveQuality] = useState<QualityTier>(quality);
+  const { users: userPresets, error: storeError, replaceUsers } = useGuestPresetStore();
+  const [artwork, setArtwork] = useState<LocalArtworkState>(createEmptyArtworkState);
   const [visualizerId, setVisualizerId] = useState<VisualizerId>(
     initialVisualizerId === "dreamscape" ? "spectrum" : initialVisualizerId,
   );
-  const [qualityMode, setQualityMode] = useState<QualityTier | "auto">("auto");
-  const [effectiveQuality, setEffectiveQuality] = useState<QualityTier>(quality);
-  const [userPresets, setUserPresets] = useState<PresetConfig[]>([]);
   const [activePresetId, setActivePresetId] = useState<string>(
     initialPresetId ?? "builtin-spectrum-calm",
   );
-  const [draftParams, setDraftParams] = useState<Record<string, unknown>>(
+  const [draftParams, setDraftParams] = useState<Record<string, unknown>>(() =>
     defaultParamsForVisualizer(
       initialVisualizerId === "dreamscape" ? "spectrum" : initialVisualizerId,
     ),
   );
-  const [storageError, setStorageError] = useState<string | null>(null);
-  const [artwork, setArtwork] = useState<LocalArtworkState>(createEmptyArtworkState());
   const [presetName, setPresetName] = useState("My preset");
+  const appliedInitialPreset = useRef(false);
 
   const plugin = useMemo(() => requireVisualizerPlugin(visualizerId), [visualizerId]);
   const mergedPresets = useMemo(() => listMergedPresets(userPresets), [userPresets]);
   const activePreset = mergedPresets.find((p) => p.id === activePresetId) ?? mergedPresets[0];
 
+  // Apply deep-linked preset once client snapshot is available (after hydration).
   useEffect(() => {
-    const loaded = loadGuestPresets();
-    if (!loaded.ok) {
-      setStorageError(loaded.error);
+    if (appliedInitialPreset.current) return;
+    if (!initialPresetId) {
+      appliedInitialPreset.current = true;
       return;
     }
-    setUserPresets(loaded.value);
-    if (initialPresetId) {
-      const found = listMergedPresets(loaded.value).find((p) => p.id === initialPresetId);
-      if (found) {
-        setActivePresetId(found.id);
-        setVisualizerId(found.visualizerId === "dreamscape" ? "spectrum" : found.visualizerId);
-        setDraftParams(parseVisualizerParams(found.visualizerId, found.params));
-      }
-    }
-  }, [initialPresetId]);
+    const found = listMergedPresets(userPresets).find((preset) => preset.id === initialPresetId);
+    if (!found) return;
+    appliedInitialPreset.current = true;
+    const id = found.visualizerId === "dreamscape" ? "spectrum" : found.visualizerId;
+    startTransition(() => {
+      setActivePresetId(found.id);
+      setVisualizerId(id);
+      setDraftParams(parseVisualizerParams(id, found.params));
+      setPresetName(found.isBuiltIn ? `${found.name} Edit` : found.name);
+    });
+  }, [initialPresetId, userPresets]);
 
   useEffect(() => {
     const engine = new DemoTrackEngine({ trackUrl: DEMO_TRACK_URL, loop: true });
@@ -169,9 +169,7 @@ export function DemoExperience({
   }, [artwork.objectUrl]);
 
   const persistUsers = (next: PresetConfig[]) => {
-    setUserPresets(next);
-    const saved = saveGuestPresets(next);
-    setStorageError(saved.ok ? null : saved.error);
+    replaceUsers(next);
   };
 
   const applyPreset = (preset: PresetConfig) => {
@@ -189,7 +187,9 @@ export function DemoExperience({
   const showError = status === "error";
   const albumArtUrl =
     visualizerId === "album_world"
-      ? (artwork.status === "ready" ? artwork.objectUrl : PLACEHOLDER_ARTWORK_PATH)
+      ? artwork.status === "ready"
+        ? artwork.objectUrl
+        : PLACEHOLDER_ARTWORK_PATH
       : null;
 
   const canvasQuality = qualityMode === "auto" ? quality : qualityMode;
@@ -251,14 +251,14 @@ export function DemoExperience({
             key={option.id}
             type="button"
             className={
-              option.id === visualizerId ? "prism-btn prism-btn-primary" : "prism-btn prism-btn-ghost"
+              option.id === visualizerId
+                ? "prism-btn prism-btn-primary"
+                : "prism-btn prism-btn-ghost"
             }
             aria-pressed={option.id === visualizerId}
             onClick={() => {
               setVisualizerId(option.id);
-              const match = mergedPresets.find(
-                (p) => p.visualizerId === option.id && p.isBuiltIn,
-              );
+              const match = mergedPresets.find((p) => p.visualizerId === option.id && p.isBuiltIn);
               if (match) {
                 applyPreset(match);
               } else {
@@ -279,7 +279,9 @@ export function DemoExperience({
             key={option.id}
             type="button"
             className={
-              option.id === qualityMode ? "prism-btn prism-btn-primary" : "prism-btn prism-btn-ghost"
+              option.id === qualityMode
+                ? "prism-btn prism-btn-primary"
+                : "prism-btn prism-btn-ghost"
             }
             aria-pressed={option.id === qualityMode}
             onClick={() => {
@@ -389,8 +391,7 @@ export function DemoExperience({
               className="prism-btn prism-btn-ghost"
               onClick={() => {
                 const source =
-                  activePreset ??
-                  createBlankPreset(visualizerId, presetName || "Untitled");
+                  activePreset ?? createBlankPreset(visualizerId, presetName || "Untitled");
                 const copy = duplicatePreset(
                   {
                     ...source,
@@ -444,16 +445,18 @@ export function DemoExperience({
                 if (!activePreset || activePreset.isBuiltIn) return;
                 const next = userPresets.filter((p) => p.id !== activePreset.id);
                 persistUsers(next);
-                const fallback = createBuiltInPresets().find((p) => p.visualizerId === visualizerId);
+                const fallback = createBuiltInPresets().find(
+                  (p) => p.visualizerId === visualizerId,
+                );
                 if (fallback) applyPreset(fallback);
               }}
             >
               Delete
             </button>
           </div>
-          {storageError ? (
+          {storeError ? (
             <p className="text-sm text-prism-ember" role="alert">
-              {storageError}
+              {storeError}
             </p>
           ) : null}
         </div>

@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AudioFeatureFrame } from "@prism/contracts";
 import { createSilentFeatureFrame } from "@prism/contracts";
 
@@ -61,6 +61,10 @@ vi.mock("@prism/visualizers", () => ({
 import { DemoExperience } from "@/components/demo-experience";
 
 describe("DemoExperience", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     listeners.clear();
     vi.clearAllMocks();
@@ -78,9 +82,10 @@ describe("DemoExperience", () => {
   it("switches visualizers without remounting audio engine", async () => {
     render(<DemoExperience variant="demo" />);
     expect(engineMock.prepare).toHaveBeenCalledTimes(1);
-    const particles = await screen.findByRole("button", { name: /^particles$/i });
+    const group = screen.getByRole("group", { name: /visualizer/i });
+    const particles = within(group).getByRole("button", { name: /^particles$/i });
     fireEvent.click(particles);
-    expect(screen.getByRole("heading", { name: /particles/i })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /^particles$/i })).toBeTruthy();
     expect(document.querySelectorAll("[data-visualizer]")).toHaveLength(1);
     expect(engineMock.prepare).toHaveBeenCalledTimes(1);
   });

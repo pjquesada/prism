@@ -1,12 +1,7 @@
 import type { QualityTier } from "@prism/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  AdaptiveQualityManager,
-  QUALITY_CAPS,
-  clampDpr,
-  qualityCaps,
-} from "./adaptive-quality.js";
+import { AdaptiveQualityManager, QUALITY_CAPS, clampDpr, qualityCaps } from "./adaptive-quality.js";
 
 describe("adaptive quality", () => {
   afterEach(() => {

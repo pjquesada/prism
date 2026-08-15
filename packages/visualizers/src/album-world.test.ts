@@ -12,7 +12,7 @@ describe("albumWorldPlugin", () => {
     const scene = new Scene();
     const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
     const renderer = {
-      domElement: document.createElement("canvas"),
+      domElement: {} as HTMLCanvasElement,
       dispose: vi.fn(),
       setSize: vi.fn(),
     } as unknown as WebGLRenderer;

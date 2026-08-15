@@ -11,9 +11,7 @@ import {
   type VisualizerId,
 } from "@prism/contracts";
 
-export type GuestPresetResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: string };
+export type GuestPresetResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function builtIns(): PresetConfig[] {
   return createBuiltInPresets().map((preset) =>

@@ -19,9 +19,9 @@ import {
   MeshStandardMaterial,
   PlaneGeometry,
   SRGBColorSpace,
-  Texture,
   TextureLoader,
   type Scene,
+  type Texture,
 } from "three";
 
 import { extractPaletteFromImageData, type Rgb } from "./palette.js";
@@ -141,14 +141,18 @@ class AlbumWorldInstance implements VisualizerInstance {
     this.keyLight.color.setRGB(accent.r / 255, accent.g / 255, accent.b / 255);
     this.keyLight.intensity = 0.7 + energy * 0.9 * params.lightReactivity + this.beatPulse * 0.5;
     this.ambient.intensity = 0.35 + params.fogDensity * 0.25;
-    this.root.rotation.y = props.reducedMotion ? 0 : Math.sin(phase * Math.PI * 2) * 0.05 * parallax;
+    this.root.rotation.y = props.reducedMotion
+      ? 0
+      : Math.sin(phase * Math.PI * 2) * 0.05 * parallax;
   }
 
   setQuality(tier: QualityTier): void {
     this.quality = tier;
   }
 
-  resize(_width: number, _height: number): void {
+  resize(width: number, height: number): void {
+    void width;
+    void height;
     // Perspective camera + fixed world planes.
   }
 

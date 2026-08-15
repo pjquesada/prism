@@ -118,7 +118,10 @@ export class AdaptiveQualityManager {
   /**
    * Ingest one frame duration sample (ms). Returns true when effective tier changed.
    */
-  sampleFrame(frameMs: number, nowMs = typeof performance !== "undefined" ? performance.now() : 0): boolean {
+  sampleFrame(
+    frameMs: number,
+    nowMs = typeof performance !== "undefined" ? performance.now() : 0,
+  ): boolean {
     if (this.manualTier !== null) return false;
     if (!Number.isFinite(frameMs) || frameMs <= 0) return false;
 

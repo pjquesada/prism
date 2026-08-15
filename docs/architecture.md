@@ -4,15 +4,15 @@
 
 Prism is a pnpm + Turborepo monorepo. Apps orchestrate; packages implement bounded domains.
 
-| Path                     | Role in 1C                                                              |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `apps/web`               | Next.js App Router PWA (`/`, `/demo`, `/app`, `/presets`, `/offline`)   |
-| `packages/audio-engine`  | Demo Track playback + local `AudioFeatureFrame` extraction              |
-| `packages/visual-engine` | R3F canvas host, adaptive quality, `VisualizerPlugin` contract          |
-| `packages/visualizers`   | Spectrum, Particles, Album World plugins                                |
-| `packages/config`        | Shared TypeScript, ESLint, Tailwind token helpers                       |
-| `packages/contracts`     | Zod domain contracts (params, presets, feature frames)                  |
-| `packages/ui`            | Stub accessible UI primitives                                           |
+| Path                     | Role in 1C                                                            |
+| ------------------------ | --------------------------------------------------------------------- |
+| `apps/web`               | Next.js App Router PWA (`/`, `/demo`, `/app`, `/presets`, `/offline`) |
+| `packages/audio-engine`  | Demo Track playback + local `AudioFeatureFrame` extraction            |
+| `packages/visual-engine` | R3F canvas host, adaptive quality, `VisualizerPlugin` contract        |
+| `packages/visualizers`   | Spectrum, Particles, Album World plugins                              |
+| `packages/config`        | Shared TypeScript, ESLint, Tailwind token helpers                     |
+| `packages/contracts`     | Zod domain contracts (params, presets, feature frames)                |
+| `packages/ui`            | Stub accessible UI primitives                                         |
 
 ## Intentionally deferred packages
 
@@ -25,13 +25,13 @@ Created in later phases only:
 
 ## Route roles
 
-| Route                 | Role                                                      |
-| --------------------- | --------------------------------------------------------- |
-| `/demo`               | Local Demo Track + Spectrum / Particles / Album World     |
-| `/app`                | Combined mode with the same Demo Track experience         |
-| `/presets`            | Browse built-in + guest-local presets                     |
-| `/presets/[presetId]` | Edit / live-preview a preset (local only)                 |
-| `/offline`            | PWA offline fallback                                      |
+| Route                 | Role                                                  |
+| --------------------- | ----------------------------------------------------- |
+| `/demo`               | Local Demo Track + Spectrum / Particles / Album World |
+| `/app`                | Combined mode with the same Demo Track experience     |
+| `/presets`            | Browse built-in + guest-local presets                 |
+| `/presets/[presetId]` | Edit / live-preview a preset (local only)             |
+| `/offline`            | PWA offline fallback                                  |
 
 ## Runtime today
 

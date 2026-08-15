@@ -1,29 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import type { PresetConfig } from "@prism/contracts";
+import { useMemo } from "react";
 
-import {
-  duplicatePreset,
-  listMergedPresets,
-  loadGuestPresets,
-  saveGuestPresets,
-} from "@/lib/guest-presets";
+import { duplicatePreset, listMergedPresets } from "@/lib/guest-presets";
+import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 
 export function PresetBrowser() {
-  const [userPresets, setUserPresets] = useState<PresetConfig[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const loaded = loadGuestPresets();
-    if (!loaded.ok) {
-      setError(loaded.error);
-      return;
-    }
-    setUserPresets(loaded.value);
-  }, []);
-
+  const { users: userPresets, error, replaceUsers } = useGuestPresetStore();
   const presets = useMemo(() => listMergedPresets(userPresets), [userPresets]);
 
   return (
@@ -52,10 +36,7 @@ export function PresetBrowser() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Link
-                  href={`/presets/${preset.id}`}
-                  className="prism-btn prism-btn-ghost"
-                >
+                <Link href={`/presets/${preset.id}`} className="prism-btn prism-btn-ghost">
                   Edit
                 </Link>
                 <Link
@@ -68,11 +49,7 @@ export function PresetBrowser() {
                   type="button"
                   className="prism-btn prism-btn-ghost"
                   onClick={() => {
-                    const copy = duplicatePreset(preset);
-                    const next = [...userPresets, copy];
-                    setUserPresets(next);
-                    const saved = saveGuestPresets(next);
-                    setError(saved.ok ? null : saved.error);
+                    replaceUsers([...userPresets, duplicatePreset(preset)]);
                   }}
                 >
                   Duplicate

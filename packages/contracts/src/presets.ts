@@ -4,12 +4,7 @@ import { albumWorldParamsDefaults, albumWorldParamsSchema } from "./album-world.
 import { spectrumParamsDefaults, spectrumParamsSchema } from "./spectrum.js";
 import { particlesParamsDefaults, particlesParamsSchema } from "./particles.js";
 
-const visualizerIdForPresetSchema = z.enum([
-  "spectrum",
-  "particles",
-  "album_world",
-  "dreamscape",
-]);
+const visualizerIdForPresetSchema = z.enum(["spectrum", "particles", "album_world", "dreamscape"]);
 
 type VisualizerIdForPreset = z.infer<typeof visualizerIdForPresetSchema>;
 

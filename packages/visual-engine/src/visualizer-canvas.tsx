@@ -90,6 +90,36 @@ function PluginRuntime({
     albumArtUrl,
     pluginId: plugin.id,
   };
+  const hostRef = useRef({
+    scene,
+    camera,
+    gl,
+    width: size.width,
+    height: size.height,
+    plugin,
+    params,
+    quality,
+    reducedMotion,
+    albumArtUrl,
+    adaptiveEnabled,
+    adaptive,
+    featuresRef,
+  });
+  hostRef.current = {
+    scene,
+    camera,
+    gl,
+    width: size.width,
+    height: size.height,
+    plugin,
+    params,
+    quality,
+    reducedMotion,
+    albumArtUrl,
+    adaptiveEnabled,
+    adaptive,
+    featuresRef,
+  };
   const lastFrameMs = useRef(typeof performance !== "undefined" ? performance.now() : 0);
   const mountedPluginId = useRef<string | null>(null);
 
@@ -106,48 +136,55 @@ function PluginRuntime({
 
   // Mount / remount plugin in-place when plugin identity changes — never remount Canvas.
   useEffect(() => {
-    const width = Math.max(1, size.width);
-    const height = Math.max(1, size.height);
-    handlesRef.current = { scene, camera, renderer: gl, width, height };
+    const host = hostRef.current;
+    const width = Math.max(1, host.width);
+    const height = Math.max(1, host.height);
+    handlesRef.current = {
+      scene: host.scene,
+      camera: host.camera,
+      renderer: host.gl,
+      width,
+      height,
+    };
 
     instanceRef.current?.dispose();
     instanceRef.current = null;
-    clearScenePlugins(scene);
+    clearScenePlugins(host.scene);
 
-    const mode = plugin.preferredCamera ?? "perspective";
-    applyCameraMode(camera, mode, width, height);
+    const mode = host.plugin.preferredCamera ?? "perspective";
+    applyCameraMode(host.camera, mode, width, height);
 
-    const instance = plugin.mount({
-      scene,
-      camera,
-      renderer: gl,
+    const instance = host.plugin.mount({
+      scene: host.scene,
+      camera: host.camera,
+      renderer: host.gl,
       width,
       height,
     });
     instanceRef.current = instance;
-    mountedPluginId.current = plugin.id;
+    mountedPluginId.current = host.plugin.id;
 
-    const tier = adaptiveEnabled ? adaptive.getEffectiveTier() : quality;
+    const tier = host.adaptiveEnabled ? host.adaptive.getEffectiveTier() : host.quality;
     instance.setQuality(tier);
     instance.resize(width, height);
     instance.update({
-      features: featuresRef.current ?? createSilentFeatureFrame(),
-      preset: { params },
+      features: host.featuresRef.current ?? createSilentFeatureFrame(),
+      preset: { params: host.params },
       quality: tier,
-      reducedMotion,
-      albumArtUrl,
+      reducedMotion: host.reducedMotion,
+      albumArtUrl: host.albumArtUrl,
     });
 
+    const sceneForCleanup = host.scene;
     return () => {
       instance.dispose();
       if (instanceRef.current === instance) {
         instanceRef.current = null;
       }
-      clearScenePlugins(scene);
+      clearScenePlugins(sceneForCleanup);
       mountedPluginId.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- remount only on plugin id
-  }, [plugin.id]);
+  }, [plugin.id, instanceRef, handlesRef]);
 
   useEffect(() => {
     if (adaptiveEnabled) {
@@ -176,7 +213,9 @@ function PluginRuntime({
         instanceRef.current?.setQuality(tier);
         const caps = qualityCaps(tier);
         const dpr =
-          typeof window !== "undefined" ? clampDpr(window.devicePixelRatio || 1, tier) : caps.dprCap;
+          typeof window !== "undefined"
+            ? clampDpr(window.devicePixelRatio || 1, tier)
+            : caps.dprCap;
         gl.setPixelRatio(dpr * caps.resolutionScale);
         onQualityChange?.(tier);
       }
@@ -248,12 +287,7 @@ export function VisualizerCanvas({
       if (handlesRef.current) {
         handlesRef.current.width = w;
         handlesRef.current.height = h;
-        applyCameraMode(
-          handlesRef.current.camera,
-          plugin.preferredCamera ?? "perspective",
-          w,
-          h,
-        );
+        applyCameraMode(handlesRef.current.camera, plugin.preferredCamera ?? "perspective", w, h);
       }
       instanceRef.current?.resize(w, h);
     });

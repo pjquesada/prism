@@ -11,14 +11,7 @@ import type {
   VisualizerPlugin,
   VisualizerProps,
 } from "@prism/visual-engine";
-import {
-  BufferAttribute,
-  BufferGeometry,
-  Color,
-  Points,
-  PointsMaterial,
-  type Scene,
-} from "three";
+import { BufferAttribute, BufferGeometry, Color, Points, PointsMaterial, type Scene } from "three";
 
 const MAX_POOL = 4096;
 /** Minimum ms between full-screen-ish burst flashes (photosensitivity). */
@@ -145,8 +138,7 @@ class ParticlesInstance implements VisualizerInstance {
     this.integrate(dt, params, motion, mid, bass);
 
     const hue =
-      (((params.baseHue + (params.accentHue - params.baseHue) * (0.35 + high * 0.5)) % 360) +
-        360) %
+      (((params.baseHue + (params.accentHue - params.baseHue) * (0.35 + high * 0.5)) % 360) + 360) %
       360;
     this.color.setHSL(hue / 360, 0.55, 0.45 + energy * 0.2 + this.burstPulse * 0.08);
     this.material.color.copy(this.color);
@@ -178,7 +170,9 @@ class ParticlesInstance implements VisualizerInstance {
     }
   }
 
-  resize(_width: number, _height: number): void {
+  resize(width: number, height: number): void {
+    void width;
+    void height;
     // World-space particle field; camera handles aspect.
   }
 
@@ -218,19 +212,15 @@ class ParticlesInstance implements VisualizerInstance {
     void drawCount;
   }
 
-  private spawn(
-    kind: number,
-    bass: number,
-    mid: number,
-    high: number,
-    burst: boolean,
-  ): void {
+  private spawn(kind: number, bass: number, mid: number, high: number, burst: boolean): void {
     if (this.activeCount >= this.capacity) {
       // Steal oldest slot via ring cursor — no allocation.
       let found = -1;
       for (let n = 0; n < this.capacity; n += 1) {
         const idx = (this.cursor + n) % this.capacity;
-        if (!this.pool.active[idx] || this.pool.ages[idx] > this.pool.lifetimes[idx] * 0.6) {
+        const age = this.pool.ages[idx] ?? 0;
+        const life = this.pool.lifetimes[idx] ?? 1;
+        if (!this.pool.active[idx] || age > life * 0.6) {
           found = idx;
           break;
         }
@@ -302,8 +292,10 @@ class ParticlesInstance implements VisualizerInstance {
 
     for (let i = 0; i < this.capacity; i += 1) {
       if (!active[i]) continue;
-      ages[i] += dt;
-      if (ages[i] >= lifetimes[i]) {
+      const age = (ages[i] ?? 0) + dt;
+      ages[i] = age;
+      const life = lifetimes[i] ?? 1;
+      if (age >= life) {
         active[i] = 0;
         this.activeCount = Math.max(0, this.activeCount - 1);
         sizes[i] = 0;
@@ -311,7 +303,7 @@ class ParticlesInstance implements VisualizerInstance {
       }
 
       const i3 = i * 3;
-      const kind = kinds[i];
+      const kind = kinds[i] ?? 0;
       // Mid-frequency swirl field.
       if (kind === 1 || kind === 2) {
         const x = positions[i3] ?? 0;
@@ -332,9 +324,8 @@ class ParticlesInstance implements VisualizerInstance {
       positions[i3 + 1] = (positions[i3 + 1] ?? 0) + (velocities[i3 + 1] ?? 0) * dt * motion;
       positions[i3 + 2] = (positions[i3 + 2] ?? 0) + (velocities[i3 + 2] ?? 0) * dt * motion;
 
-      const lifeT = ages[i] / Math.max(lifetimes[i], 0.001);
-      const baseSize =
-        kind === 0 ? 0.22 + bass * 0.5 * params.bassSize : kind === 1 ? 0.1 : 0.05;
+      const lifeT = age / Math.max(life, 0.001);
+      const baseSize = kind === 0 ? 0.22 + bass * 0.5 * params.bassSize : kind === 1 ? 0.1 : 0.05;
       sizes[i] = baseSize * (1 - lifeT * 0.85) * (0.7 + this.burstPulse * 0.5);
     }
   }

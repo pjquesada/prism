@@ -15,47 +15,40 @@ import { requireVisualizerPlugin } from "@prism/visualizers";
 import {
   createBlankPreset,
   listMergedPresets,
-  loadGuestPresets,
   resetPresetParams,
-  saveGuestPresets,
   updatePresetParams,
 } from "@/lib/guest-presets";
 import { PLACEHOLDER_ARTWORK_PATH } from "@/lib/local-artwork";
+import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 
 type PresetEditorProps = {
   presetId: string;
 };
 
+function toDraft(preset: PresetConfig): PresetConfig {
+  return {
+    ...preset,
+    params: parseVisualizerParams(preset.visualizerId, preset.params),
+  };
+}
+
 export function PresetEditor({ presetId }: PresetEditorProps) {
   const featuresRef = useRef<AudioFeatureFrame>(silentFrame());
-  const [userPresets, setUserPresets] = useState<PresetConfig[]>([]);
-  const [draft, setDraft] = useState<PresetConfig | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
+  const { users: userPresets, error: storeError, replaceUsers } = useGuestPresetStore();
+  const merged = useMemo(() => listMergedPresets(userPresets), [userPresets]);
+  const source = merged.find((preset) => preset.id === presetId) ?? null;
+
+  const [draft, setDraft] = useState<PresetConfig>(() =>
+    createBlankPreset("spectrum", "Untitled preset"),
+  );
+  const [dirty, setDirty] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const rafRef = useRef(0);
+
+  const displayDraft =
+    !dirty && source ? toDraft(source) : dirty ? draft : source ? toDraft(source) : draft;
 
   useEffect(() => {
-    const loaded = loadGuestPresets();
-    if (!loaded.ok) {
-      setError(loaded.error);
-      return;
-    }
-    setUserPresets(loaded.value);
-    const merged = listMergedPresets(loaded.value);
-    const found = merged.find((p) => p.id === presetId);
-    if (found) {
-      setDraft({
-        ...found,
-        params: parseVisualizerParams(found.visualizerId, found.params),
-        isBuiltIn: found.isBuiltIn,
-      });
-    } else {
-      setDraft(createBlankPreset("spectrum", "Untitled preset"));
-    }
-  }, [presetId]);
-
-  // Ambient silent preview motion via beatPhase drift for live param feedback without audio.
-  useEffect(() => {
-    let raf = 0;
     const start = performance.now();
     const loop = (now: number) => {
       const t = (now - start) / 1000;
@@ -67,33 +60,27 @@ export function PresetEditor({ presetId }: PresetEditorProps) {
         mid: 0.18,
         high: 0.12,
       };
-      setTick((value) => (value + 1) % 1000);
-      raf = requestAnimationFrame(loop);
+      rafRef.current = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
   }, []);
 
   const plugin = useMemo(
-    () => requireVisualizerPlugin(draft?.visualizerId ?? "spectrum"),
-    [draft?.visualizerId],
+    () => requireVisualizerPlugin(displayDraft.visualizerId),
+    [displayDraft.visualizerId],
   );
-
-  if (!draft) {
-    return (
-      <p className="text-prism-mist" role="status">
-        Loading preset…
-      </p>
-    );
-  }
+  const error = localError ?? storeError;
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <p className="text-sm uppercase tracking-[0.14em] text-prism-aurora">Live preview</p>
-        <h1 className="mt-2 font-display text-4xl font-semibold text-prism-foam">{draft.name}</h1>
+        <h1 className="mt-2 font-display text-4xl font-semibold text-prism-foam">
+          {displayDraft.name}
+        </h1>
         <p className="mt-2 text-prism-mist">
-          {draft.isBuiltIn
+          {displayDraft.isBuiltIn
             ? "Built-in presets are read-only. Save a duplicate to edit."
             : "Edits preview instantly and stay on this device when saved."}
         </p>
@@ -105,22 +92,24 @@ export function PresetEditor({ presetId }: PresetEditorProps) {
           featuresRef={featuresRef}
           quality="medium"
           adaptiveQuality={false}
-          params={draft.params}
+          params={displayDraft.params}
           albumArtUrl={
-            draft.visualizerId === "album_world" ? PLACEHOLDER_ARTWORK_PATH : null
+            displayDraft.visualizerId === "album_world" ? PLACEHOLDER_ARTWORK_PATH : null
           }
           className="h-[20rem] w-full"
         />
-        <span className="sr-only">preview frame {tick}</span>
       </div>
 
       <label className="block text-sm text-prism-mist">
         Name
         <input
           className="mt-1 w-full rounded-sm border border-prism-slate bg-prism-ink px-3 py-2 text-prism-foam"
-          value={draft.name}
-          disabled={draft.isBuiltIn}
-          onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+          value={displayDraft.name}
+          disabled={displayDraft.isBuiltIn}
+          onChange={(event) => {
+            setDirty(true);
+            setDraft({ ...displayDraft, name: event.target.value });
+          }}
         />
       </label>
 
@@ -132,13 +121,14 @@ export function PresetEditor({ presetId }: PresetEditorProps) {
           max={3}
           step={0.05}
           className="mt-1 w-full"
-          disabled={draft.isBuiltIn}
-          value={Number(draft.params.sensitivity ?? 1)}
+          disabled={displayDraft.isBuiltIn}
+          value={Number(displayDraft.params.sensitivity ?? 1)}
           onChange={(event) => {
+            setDirty(true);
             setDraft({
-              ...draft,
+              ...displayDraft,
               params: {
-                ...draft.params,
+                ...displayDraft.params,
                 sensitivity: Number(event.target.value),
               },
             });
@@ -156,15 +146,14 @@ export function PresetEditor({ presetId }: PresetEditorProps) {
         <button
           type="button"
           className="prism-btn prism-btn-primary"
-          disabled={draft.isBuiltIn}
+          disabled={displayDraft.isBuiltIn}
           onClick={() => {
-            const saved = updatePresetParams(draft, draft.params);
-            const named = { ...saved, name: draft.name };
-            const next = [...userPresets.filter((p) => p.id !== named.id), named];
-            setUserPresets(next);
-            const result = saveGuestPresets(next);
-            setError(result.ok ? null : result.error);
+            const saved = updatePresetParams(displayDraft, displayDraft.params);
+            const named = { ...saved, name: displayDraft.name };
+            replaceUsers([...userPresets.filter((p) => p.id !== named.id), named]);
+            setLocalError(null);
             setDraft(named);
+            setDirty(true);
           }}
         >
           Save
@@ -173,11 +162,12 @@ export function PresetEditor({ presetId }: PresetEditorProps) {
           type="button"
           className="prism-btn prism-btn-ghost"
           onClick={() => {
-            const reset = resetPresetParams(draft);
+            const reset = resetPresetParams(displayDraft);
+            setDirty(true);
             setDraft({
               ...reset,
-              name: draft.name,
-              params: defaultParamsForVisualizer(draft.visualizerId),
+              name: displayDraft.name,
+              params: defaultParamsForVisualizer(displayDraft.visualizerId),
             });
           }}
         >
