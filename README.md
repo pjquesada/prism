@@ -22,6 +22,8 @@ pnpm dev
 
 Web app: [http://localhost:3000](http://localhost:3000)
 
+Phase 1A routes: `/` (entry), `/demo` (local demo shell), `/app` (combined mode), `/offline`.
+
 ## Scripts
 
 | Script              | Description                     |

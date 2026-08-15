@@ -4,6 +4,10 @@ import { qualityTierSchema } from "@prism/contracts";
 
 const defaultQuality = qualityTierSchema.parse(process.env.NEXT_PUBLIC_DEFAULT_QUALITY ?? "high");
 
+/**
+ * Combined mode route from the build specification (`/app`).
+ * Controller + display on one device. Distinct from `/demo` (Demo Track shell).
+ */
 export default function AppShellPage() {
   return (
     <main className="prism-shell">
@@ -14,7 +18,7 @@ export default function AppShellPage() {
           <Link href="/" className="font-display text-2xl font-bold tracking-tight">
             Prism
           </Link>
-          <p className="text-sm text-prism-mist">Local combined shell</p>
+          <p className="text-sm text-prism-mist">Combined mode</p>
         </header>
 
         <section className="mt-16 flex flex-1 flex-col justify-center">
@@ -22,8 +26,8 @@ export default function AppShellPage() {
             Combined mode
           </h1>
           <p className="mt-4 max-w-lg text-base leading-relaxed text-prism-mist">
-            This local-only shell is ready for Demo Track and Spectrum in Phase 1B. No microphone,
-            providers, or cloud sessions are wired yet.
+            Spec route for controller and display on one device. Foundation shell only—pairing,
+            sessions, and reactive visuals arrive in later phases.
           </p>
 
           <div
@@ -36,12 +40,18 @@ export default function AppShellPage() {
               Visualizer surface placeholder · quality default: {defaultQuality}
             </p>
             <p className="mt-4 text-sm text-prism-mist">
-              Loading, offline, and error states will deepen as audio and render engines land. For
-              now the shell stays responsive without network calls.
+              For the local Demo Track shell, use{" "}
+              <Link href="/demo" className="text-prism-aurora underline-offset-2 hover:underline">
+                /demo
+              </Link>
+              .
             </p>
           </div>
 
-          <div className="mt-8">
+          <div className="mt-8 flex flex-wrap gap-3">
+            <Link href="/demo" className="prism-btn prism-btn-primary">
+              Open demo shell
+            </Link>
             <Link href="/" className="prism-btn prism-btn-ghost">
               Back to entry
             </Link>

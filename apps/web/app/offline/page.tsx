@@ -17,8 +17,11 @@ export default function OfflinePage() {
           <Link href="/" className="prism-btn prism-btn-primary">
             Try entry again
           </Link>
+          <Link href="/demo" className="prism-btn prism-btn-ghost">
+            Open demo shell
+          </Link>
           <Link href="/app" className="prism-btn prism-btn-ghost">
-            Open local shell
+            Combined mode
           </Link>
         </div>
       </div>
