@@ -18,13 +18,22 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("@/components/demo-experience", () => ({
+  DemoExperience: ({ variant }: { variant: string }) => (
+    <div>
+      <h1>Spectrum</h1>
+      <button type="button">Play</button>
+      <p>Mock demo experience ({variant})</p>
+    </div>
+  ),
+}));
+
 import DemoShellPage from "@/app/demo/page";
 
 describe("DemoShellPage", () => {
-  it("renders the local-only demo shell without audio controls", () => {
+  it("renders Demo Track experience with a Play control", () => {
     render(<DemoShellPage />);
-    expect(screen.getByRole("heading", { name: "Demo" })).toBeTruthy();
-    expect(screen.getByText(/Demo Track player placeholder/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /play/i })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Spectrum" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /play/i })).toBeTruthy();
   });
 });

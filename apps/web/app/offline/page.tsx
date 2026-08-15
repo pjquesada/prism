@@ -10,8 +10,8 @@ export default function OfflinePage() {
           You&apos;re offline
         </h1>
         <p className="mt-4 max-w-md text-base leading-relaxed text-prism-mist">
-          The installable shell is still here. Demo Track playback and Spectrum will work offline
-          after they ship and are cached.
+          The installable shell is still here. After a prior visit, Demo Track and Spectrum can run
+          from cache without a network connection.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Link href="/" className="prism-btn prism-btn-primary">
