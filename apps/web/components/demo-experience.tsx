@@ -1,21 +1,62 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { DemoTrackEngine, silentFrame, type DemoTrackEngineStatus } from "@prism/audio-engine";
-import type { AudioFeatureFrame, QualityTier } from "@prism/contracts";
+import {
+  createBuiltInPresets,
+  defaultParamsForVisualizer,
+  parseVisualizerParams,
+  type AudioFeatureFrame,
+  type PresetConfig,
+  type QualityTier,
+  type VisualizerId,
+} from "@prism/contracts";
 import { VisualizerCanvas } from "@prism/visual-engine";
-import { spectrumPlugin } from "@prism/visualizers";
+import { requireVisualizerPlugin } from "@prism/visualizers";
+
+import {
+  createBlankPreset,
+  duplicatePreset,
+  listMergedPresets,
+  resetPresetParams,
+  updatePresetParams,
+} from "@/lib/guest-presets";
+import {
+  PLACEHOLDER_ARTWORK_PATH,
+  createEmptyArtworkState,
+  readLocalArtworkFile,
+  revokeArtworkUrl,
+  type LocalArtworkState,
+} from "@/lib/local-artwork";
+import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
 const DEMO_TRACK_DESCRIPTION =
   "Original synthetic royalty-free loop generated for Prism (16s, ~96 BPM).";
 
+const VISUALIZER_OPTIONS: { id: VisualizerId; label: string }[] = [
+  { id: "spectrum", label: "Spectrum" },
+  { id: "particles", label: "Particles" },
+  { id: "album_world", label: "Album World" },
+];
+
+const QUALITY_OPTIONS: { id: QualityTier | "auto"; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "ultra", label: "Ultra" },
+];
+
 export type DemoExperienceVariant = "demo" | "combined";
 
 type DemoExperienceProps = {
   variant: DemoExperienceVariant;
   quality?: QualityTier;
+  initialVisualizerId?: VisualizerId;
+  initialPresetId?: string;
 };
 
 function statusLabel(status: DemoTrackEngineStatus): string {
@@ -40,12 +81,57 @@ function statusLabel(status: DemoTrackEngineStatus): string {
   }
 }
 
-export function DemoExperience({ variant, quality = "high" }: DemoExperienceProps) {
+export function DemoExperience({
+  variant,
+  quality = "high",
+  initialVisualizerId = "spectrum",
+  initialPresetId,
+}: DemoExperienceProps) {
   const engineRef = useRef<DemoTrackEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(silentFrame());
   const [status, setStatus] = useState<DemoTrackEngineStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
-  const [hud, setHud] = useState({ energy: 0, onset: false, bands: 32 });
+  const [hud, setHud] = useState({ energy: 0, onset: false, bass: 0, mid: 0, high: 0 });
+  const [qualityMode, setQualityMode] = useState<QualityTier | "auto">("auto");
+  const [effectiveQuality, setEffectiveQuality] = useState<QualityTier>(quality);
+  const { users: userPresets, error: storeError, replaceUsers } = useGuestPresetStore();
+  const [artwork, setArtwork] = useState<LocalArtworkState>(createEmptyArtworkState);
+  const [visualizerId, setVisualizerId] = useState<VisualizerId>(
+    initialVisualizerId === "dreamscape" ? "spectrum" : initialVisualizerId,
+  );
+  const [activePresetId, setActivePresetId] = useState<string>(
+    initialPresetId ?? "builtin-spectrum-calm",
+  );
+  const [draftParams, setDraftParams] = useState<Record<string, unknown>>(() =>
+    defaultParamsForVisualizer(
+      initialVisualizerId === "dreamscape" ? "spectrum" : initialVisualizerId,
+    ),
+  );
+  const [presetName, setPresetName] = useState("My preset");
+  const appliedInitialPreset = useRef(false);
+
+  const plugin = useMemo(() => requireVisualizerPlugin(visualizerId), [visualizerId]);
+  const mergedPresets = useMemo(() => listMergedPresets(userPresets), [userPresets]);
+  const activePreset = mergedPresets.find((p) => p.id === activePresetId) ?? mergedPresets[0];
+
+  // Apply deep-linked preset once client snapshot is available (after hydration).
+  useEffect(() => {
+    if (appliedInitialPreset.current) return;
+    if (!initialPresetId) {
+      appliedInitialPreset.current = true;
+      return;
+    }
+    const found = listMergedPresets(userPresets).find((preset) => preset.id === initialPresetId);
+    if (!found) return;
+    appliedInitialPreset.current = true;
+    const id = found.visualizerId === "dreamscape" ? "spectrum" : found.visualizerId;
+    startTransition(() => {
+      setActivePresetId(found.id);
+      setVisualizerId(id);
+      setDraftParams(parseVisualizerParams(id, found.params));
+      setPresetName(found.isBuiltIn ? `${found.name} Edit` : found.name);
+    });
+  }, [initialPresetId, userPresets]);
 
   useEffect(() => {
     const engine = new DemoTrackEngine({ trackUrl: DEMO_TRACK_URL, loop: true });
@@ -61,7 +147,9 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
         setHud({
           energy: event.frame.energy,
           onset: event.frame.onset,
-          bands: event.frame.bands.length,
+          bass: event.frame.bass,
+          mid: event.frame.mid,
+          high: event.frame.high,
         });
       }
     });
@@ -74,11 +162,37 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      revokeArtworkUrl(artwork.objectUrl);
+    };
+  }, [artwork.objectUrl]);
+
+  const persistUsers = (next: PresetConfig[]) => {
+    replaceUsers(next);
+  };
+
+  const applyPreset = (preset: PresetConfig) => {
+    const id = preset.visualizerId === "dreamscape" ? "spectrum" : preset.visualizerId;
+    setActivePresetId(preset.id);
+    setVisualizerId(id);
+    setDraftParams(parseVisualizerParams(id, preset.params));
+    setPresetName(preset.isBuiltIn ? `${preset.name} Edit` : preset.name);
+  };
+
   const busy = status === "loading";
   const canPlay = status === "ready" || status === "needs_gesture" || status === "paused";
   const canPause = status === "playing";
   const showUnsupported = status === "unsupported";
   const showError = status === "error";
+  const albumArtUrl =
+    visualizerId === "album_world"
+      ? artwork.status === "ready"
+        ? artwork.objectUrl
+        : PLACEHOLDER_ARTWORK_PATH
+      : null;
+
+  const canvasQuality = qualityMode === "auto" ? quality : qualityMode;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6">
@@ -88,7 +202,7 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
             {variant === "combined" ? "Combined · Demo Track" : "Demo Track"}
           </p>
           <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-prism-foam sm:text-5xl">
-            Spectrum
+            {plugin.label}
           </h1>
           <p className="mt-3 max-w-xl text-base leading-relaxed text-prism-mist">
             Local analysis only — numeric feature frames stay on this device.{" "}
@@ -114,7 +228,7 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
             type="button"
             className="prism-btn prism-btn-ghost"
             onClick={() => {
-              const el = document.querySelector<HTMLElement>("[data-visualizer='spectrum']");
+              const el = document.querySelector<HTMLElement>(`[data-visualizer='${plugin.id}']`);
               if (!el) return;
               if (document.fullscreenElement) {
                 void document.exitFullscreen();
@@ -125,13 +239,66 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
           >
             Full screen
           </button>
+          <Link href="/presets" className="prism-btn prism-btn-ghost">
+            Presets
+          </Link>
         </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3" role="group" aria-label="Visualizer">
+        {VISUALIZER_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={
+              option.id === visualizerId
+                ? "prism-btn prism-btn-primary"
+                : "prism-btn prism-btn-ghost"
+            }
+            aria-pressed={option.id === visualizerId}
+            onClick={() => {
+              setVisualizerId(option.id);
+              const match = mergedPresets.find((p) => p.visualizerId === option.id && p.isBuiltIn);
+              if (match) {
+                applyPreset(match);
+              } else {
+                setDraftParams(defaultParamsForVisualizer(option.id));
+                setActivePresetId(`draft-${option.id}`);
+              }
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Quality">
+        <span className="text-sm text-prism-mist">Quality</span>
+        {QUALITY_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={
+              option.id === qualityMode
+                ? "prism-btn prism-btn-primary"
+                : "prism-btn prism-btn-ghost"
+            }
+            aria-pressed={option.id === qualityMode}
+            onClick={() => {
+              setQualityMode(option.id);
+              if (option.id !== "auto") setEffectiveQuality(option.id);
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+        <span className="text-xs text-prism-mist/80">Effective: {effectiveQuality}</span>
       </div>
 
       <div
         className="relative min-h-[min(70vh,36rem)] flex-1 overflow-hidden rounded-sm border border-prism-slate bg-prism-deep/70"
         role="region"
-        aria-label="Spectrum visualizer"
+        aria-label={`${plugin.label} visualizer`}
       >
         {busy ? (
           <div
@@ -171,18 +338,188 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
         ) : null}
 
         <VisualizerCanvas
-          plugin={spectrumPlugin}
+          plugin={plugin}
           featuresRef={featuresRef}
-          quality={quality}
+          quality={canvasQuality}
+          adaptiveQuality={qualityMode === "auto"}
+          params={draftParams}
+          albumArtUrl={albumArtUrl}
+          onQualityChange={setEffectiveQuality}
           className="h-full min-h-[min(70vh,36rem)] w-full"
           fallback={
             <div className="flex h-full min-h-[min(70vh,36rem)] items-center justify-center p-6">
               <p className="max-w-md text-center text-prism-foam">
-                WebGL is unavailable. Audio can still play, but Spectrum cannot render.
+                WebGL is unavailable. Audio can still play, but visualizers cannot render.
               </p>
             </div>
           }
         />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-3">
+          <h2 className="font-display text-lg text-prism-foam">Preset</h2>
+          <label className="block text-sm text-prism-mist">
+            Active preset
+            <select
+              className="mt-1 w-full rounded-sm border border-prism-slate bg-prism-ink px-3 py-2 text-prism-foam"
+              value={activePreset?.id ?? ""}
+              onChange={(event) => {
+                const next = mergedPresets.find((p) => p.id === event.target.value);
+                if (next) applyPreset(next);
+              }}
+            >
+              {mergedPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                  {preset.isBuiltIn ? " (built-in)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm text-prism-mist">
+            Name
+            <input
+              className="mt-1 w-full rounded-sm border border-prism-slate bg-prism-ink px-3 py-2 text-prism-foam"
+              value={presetName}
+              onChange={(event) => setPresetName(event.target.value)}
+            />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="prism-btn prism-btn-ghost"
+              onClick={() => {
+                const source =
+                  activePreset ?? createBlankPreset(visualizerId, presetName || "Untitled");
+                const copy = duplicatePreset(
+                  {
+                    ...source,
+                    params: draftParams,
+                    visualizerId,
+                  },
+                  presetName || undefined,
+                );
+                persistUsers([...userPresets, copy]);
+                applyPreset(copy);
+              }}
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              className="prism-btn prism-btn-ghost"
+              onClick={() => {
+                const base =
+                  activePreset && !activePreset.isBuiltIn
+                    ? activePreset
+                    : createBlankPreset(visualizerId, presetName || "Untitled");
+                const saved = updatePresetParams(
+                  { ...base, name: presetName || base.name, visualizerId },
+                  draftParams,
+                );
+                const without = userPresets.filter((p) => p.id !== saved.id);
+                persistUsers([...without, saved]);
+                applyPreset(saved);
+              }}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="prism-btn prism-btn-ghost"
+              onClick={() => {
+                const source =
+                  activePreset ?? createBlankPreset(visualizerId, presetName || "Untitled");
+                const reset = resetPresetParams({ ...source, visualizerId, isBuiltIn: false });
+                setDraftParams(reset.params);
+              }}
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              className="prism-btn prism-btn-ghost"
+              disabled={!activePreset || activePreset.isBuiltIn}
+              onClick={() => {
+                if (!activePreset || activePreset.isBuiltIn) return;
+                const next = userPresets.filter((p) => p.id !== activePreset.id);
+                persistUsers(next);
+                const fallback = createBuiltInPresets().find(
+                  (p) => p.visualizerId === visualizerId,
+                );
+                if (fallback) applyPreset(fallback);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+          {storeError ? (
+            <p className="text-sm text-prism-ember" role="alert">
+              {storeError}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="space-y-3">
+          <h2 className="font-display text-lg text-prism-foam">Live params</h2>
+          <label className="block text-sm text-prism-mist">
+            Sensitivity
+            <input
+              type="range"
+              min={0.25}
+              max={3}
+              step={0.05}
+              className="mt-1 w-full"
+              value={Number(draftParams.sensitivity ?? 1)}
+              onChange={(event) => {
+                setDraftParams((prev) => ({
+                  ...prev,
+                  sensitivity: Number(event.target.value),
+                }));
+              }}
+            />
+          </label>
+          {visualizerId === "album_world" ? (
+            <div className="space-y-2">
+              <p className="text-sm text-prism-mist">
+                Local artwork only — never uploaded. Missing or invalid files use Prism placeholder
+                art.
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                aria-label="Choose local artwork"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  void (async () => {
+                    const previous = artwork.objectUrl;
+                    const next = await readLocalArtworkFile(file);
+                    setArtwork(next);
+                    revokeArtworkUrl(previous);
+                  })();
+                }}
+              />
+              {artwork.status === "error" ? (
+                <p className="text-sm text-prism-ember" role="alert">
+                  {artwork.error}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                className="prism-btn prism-btn-ghost"
+                onClick={() => {
+                  revokeArtworkUrl(artwork.objectUrl);
+                  setArtwork(createEmptyArtworkState());
+                }}
+              >
+                Clear artwork
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="space-y-2" aria-live="polite">
@@ -191,7 +528,8 @@ export function DemoExperience({ variant, quality = "high" }: DemoExperienceProp
           <p className="text-sm text-prism-ember">{errorMessage}</p>
         ) : null}
         <p className="text-xs text-prism-mist/80">
-          Energy {hud.energy.toFixed(2)} · onset {hud.onset ? "yes" : "no"} · bands {hud.bands}
+          Energy {hud.energy.toFixed(2)} · bass {hud.bass.toFixed(2)} · mid {hud.mid.toFixed(2)} ·
+          high {hud.high.toFixed(2)} · onset {hud.onset ? "yes" : "no"}
         </p>
       </div>
     </div>

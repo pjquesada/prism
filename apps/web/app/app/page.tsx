@@ -30,6 +30,9 @@ export default function AppShellPage() {
             <Link href="/demo" className="prism-btn prism-btn-ghost">
               Open demo shell
             </Link>
+            <Link href="/presets" className="prism-btn prism-btn-ghost">
+              Presets
+            </Link>
             <Link href="/" className="prism-btn prism-btn-ghost">
               Back to entry
             </Link>

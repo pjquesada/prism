@@ -27,6 +27,10 @@ export const audioFeatureFrameSchema = z.object({
   bands: z.array(z.number().min(0).max(1)),
   energy: z.number().min(0).max(1),
   onset: z.boolean(),
+  /** Aggregate 0..1 band energies for visualizer reactivity. */
+  bass: z.number().min(0).max(1),
+  mid: z.number().min(0).max(1),
+  high: z.number().min(0).max(1),
 });
 export type AudioFeatureFrame = z.infer<typeof audioFeatureFrameSchema>;
 
@@ -41,6 +45,9 @@ export function createSilentFeatureFrame(timestampMs = 0, bandCount = 32): Audio
     bands: Array.from({ length: bandCount }, () => 0),
     energy: 0,
     onset: false,
+    bass: 0,
+    mid: 0,
+    high: 0,
   };
 }
 
@@ -51,3 +58,30 @@ export {
   type SpectrumParams,
   type VisualizerPluginMeta,
 } from "./spectrum.js";
+
+export {
+  particlesParamsDefaults,
+  particlesParamsSchema,
+  type ParticlesParams,
+} from "./particles.js";
+
+export {
+  albumWorldParamsDefaults,
+  albumWorldParamsSchema,
+  type AlbumWorldParams,
+} from "./album-world.js";
+
+export {
+  GUEST_PRESET_STORAGE_KEY,
+  MAX_GUEST_PRESETS,
+  PRESET_SCHEMA_VERSION,
+  createBuiltInPresets,
+  createUserPreset,
+  defaultParamsForVisualizer,
+  guestPresetStoreSchema,
+  parseVisualizerParams,
+  presetConfigSchema,
+  presetSchemaVersionSchema,
+  type GuestPresetStore,
+  type PresetConfig,
+} from "./presets.js";

@@ -32,6 +32,18 @@ const serwist = new Serwist({
         ],
       }),
     },
+    {
+      matcher: ({ url, sameOrigin }) => sameOrigin && url.pathname.startsWith("/artwork/"),
+      handler: new CacheFirst({
+        cacheName: "prism-artwork",
+        plugins: [
+          new ExpirationPlugin({
+            maxEntries: 8,
+            maxAgeSeconds: 60 * 60 * 24 * 30,
+          }),
+        ],
+      }),
+    },
     ...defaultCache,
   ],
   fallbacks: {

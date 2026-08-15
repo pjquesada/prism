@@ -4,7 +4,7 @@ Atmospheric multi-device music visualizer companion.
 
 ## Status
 
-**Phase 1B** — Demo Track, audio-engine feature frames, and Spectrum visualizer.
+**Phase 1C** — Particles, Album World, guest presets, and adaptive quality.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ pnpm dev
 
 Web app: [http://localhost:3000](http://localhost:3000)
 
-Routes: `/` (entry), `/demo` (Demo Track + Spectrum), `/app` (combined mode), `/offline`.
+Routes: `/` (entry), `/demo` (Demo Track + visualizers), `/app` (combined mode), `/presets`, `/offline`.
 
 ## Scripts
 
@@ -45,17 +45,17 @@ node scripts/generate-demo-track.mjs
 ```text
 apps/web                 Next.js App Router PWA
 packages/audio-engine    Web Audio Demo Track + feature frames
-packages/visual-engine   R3F host + visualizer plugin contract
-packages/visualizers     Spectrum (and later visualizers)
+packages/visual-engine   R3F host, adaptive quality, plugin contract
+packages/visualizers     Spectrum, Particles, Album World
 packages/config          Shared TS / ESLint / Tailwind tooling
 packages/contracts       Zod schemas and domain types
-packages/ui              Shared UI stub primitives
+packages/ui              Stub accessible UI primitives
 docs/                    Architecture and phase notes
 ```
 
 ## Environment
 
-Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + Spectrum do not require API keys. Never put secrets in `NEXT_PUBLIC_*`.
+Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + visualizers do not require API keys. Never put secrets in `NEXT_PUBLIC_*`.
 
 ## Spec
 

@@ -83,12 +83,19 @@ describe("feature math", () => {
       timestampMs: 2500,
       bandCount: 16,
     });
-    expect(audioFeatureFrameSchema.parse(frame).bands).toHaveLength(16);
+    const parsed = audioFeatureFrameSchema.parse(frame);
+    expect(parsed.bands).toHaveLength(16);
+    expect(parsed.bass).toBeGreaterThanOrEqual(0);
+    expect(parsed.mid).toBeGreaterThanOrEqual(0);
+    expect(parsed.high).toBeGreaterThanOrEqual(0);
   });
 
   it("returns silent frames for fallbacks", () => {
     const frame = silentFrame(12, 8);
     expect(frame.energy).toBe(0);
     expect(frame.bands).toHaveLength(8);
+    expect(frame.bass).toBe(0);
+    expect(frame.mid).toBe(0);
+    expect(frame.high).toBe(0);
   });
 });
