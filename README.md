@@ -4,7 +4,7 @@ Atmospheric multi-device music visualizer companion.
 
 ## Status
 
-**Phase 1C** — Particles, Album World, guest presets, and adaptive quality.
+**Phase 1D** — Guest sessions, pairing, realtime sync, multi-display.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ pnpm dev
 
 Web app: [http://localhost:3000](http://localhost:3000)
 
-Routes: `/` (entry), `/demo` (Demo Track + visualizers), `/app` (combined mode), `/presets`, `/offline`.
+Routes: `/` (entry), `/start` (guest session), `/join` (pairing), `/demo` (local Demo Track), `/app` (combined), `/presets`, `/offline`.
 
 ## Scripts
 
@@ -47,15 +47,18 @@ apps/web                 Next.js App Router PWA
 packages/audio-engine    Web Audio Demo Track + feature frames
 packages/visual-engine   R3F host, adaptive quality, plugin contract
 packages/visualizers     Spectrum, Particles, Album World
+packages/sync-engine     Session clock, seq, playback projection
+packages/db              Supabase helpers (optional)
 packages/config          Shared TS / ESLint / Tailwind tooling
 packages/contracts       Zod schemas and domain types
 packages/ui              Stub accessible UI primitives
+supabase/migrations      Guest session schema + RLS
 docs/                    Architecture and phase notes
 ```
 
 ## Environment
 
-Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + visualizers do not require API keys. Never put secrets in `NEXT_PUBLIC_*`.
+Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + visualizers do not require API keys. Session pairing works with the in-memory backend when Supabase is unset. Never put secrets in `NEXT_PUBLIC_*`.
 
 ## Spec
 

@@ -94,6 +94,30 @@ export class DemoTrackEngine {
     return this.errorMessage;
   }
 
+  /** Current Demo Track position in milliseconds (0 when media is unavailable). */
+  getPositionMs(): number {
+    return (this.mediaElement?.currentTime ?? 0) * 1000;
+  }
+
+  setPositionMs(positionMs: number): void {
+    if (!this.mediaElement) return;
+    const duration = this.mediaElement.duration;
+    const seconds = Math.max(0, positionMs / 1000);
+    this.mediaElement.currentTime =
+      Number.isFinite(duration) && duration > 0
+        ? Math.min(seconds, Math.max(0, duration - 0.05))
+        : seconds;
+  }
+
+  getPlaybackRate(): number {
+    return this.mediaElement?.playbackRate ?? 1;
+  }
+
+  setPlaybackRate(rate: number): void {
+    if (!this.mediaElement) return;
+    this.mediaElement.playbackRate = Math.min(2, Math.max(0.5, rate));
+  }
+
   subscribe(listener: DemoTrackEngineListener): () => void {
     this.listeners.add(listener);
     listener({ status: this.status, frame: this.frame, errorMessage: this.errorMessage });

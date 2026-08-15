@@ -1,45 +1,43 @@
-# Prism architecture (Phase 1C snapshot)
+# Prism architecture (Phase 1D snapshot)
 
 ## Shape
 
 Prism is a pnpm + Turborepo monorepo. Apps orchestrate; packages implement bounded domains.
 
-| Path                     | Role in 1C                                                            |
-| ------------------------ | --------------------------------------------------------------------- |
-| `apps/web`               | Next.js App Router PWA (`/`, `/demo`, `/app`, `/presets`, `/offline`) |
-| `packages/audio-engine`  | Demo Track playback + local `AudioFeatureFrame` extraction            |
-| `packages/visual-engine` | R3F canvas host, adaptive quality, `VisualizerPlugin` contract        |
-| `packages/visualizers`   | Spectrum, Particles, Album World plugins                              |
-| `packages/config`        | Shared TypeScript, ESLint, Tailwind token helpers                     |
-| `packages/contracts`     | Zod domain contracts (params, presets, feature frames)                |
-| `packages/ui`            | Stub accessible UI primitives                                         |
+| Path                     | Role in 1D                                               |
+| ------------------------ | -------------------------------------------------------- |
+| `apps/web`               | Next.js PWA + session routes / APIs                      |
+| `packages/audio-engine`  | Demo Track playback + local feature frames               |
+| `packages/visual-engine` | R3F canvas host, adaptive quality                        |
+| `packages/visualizers`   | Spectrum, Particles, Album World                         |
+| `packages/sync-engine`   | Session clock, seq, playback projection, reducers        |
+| `packages/db`            | Supabase client helpers + schema types                   |
+| `packages/contracts`     | Zod domain + session protocol                            |
+| `packages/config`        | Shared tooling                                           |
+| `packages/ui`            | Stub accessible UI primitives                            |
+| `supabase/migrations`    | Guest sessions, pairing, playback, preset snapshots, RLS |
 
-## Intentionally deferred packages
+## Routes
 
-Created in later phases only:
+| Route                     | Role                                      |
+| ------------------------- | ----------------------------------------- |
+| `/`                       | Brand entry                               |
+| `/start`                  | Create guest session, show code/QR        |
+| `/join`                   | Redeem pairing code / QR                  |
+| `/controller/[sessionId]` | Controller chrome + optional local canvas |
+| `/display/[sessionId]`    | Immersive display follower                |
+| `/demo`                   | Local Demo Track (no network session)     |
+| `/app`                    | Local Combined Demo                       |
+| `/presets`                | Guest-local presets                       |
+| `/offline`                | PWA offline fallback                      |
 
-- `sync-engine`, `db`, `supabase/` (1D)
-- `provider-adapters`, `ai-adapters` (stub/mock when needed)
-- Dreamscape visualizer (1F)
-- `apps/android-tv` (1G)
+## Runtime
 
-## Route roles
-
-| Route                 | Role                                                  |
-| --------------------- | ----------------------------------------------------- |
-| `/demo`               | Local Demo Track + Spectrum / Particles / Album World |
-| `/app`                | Combined mode with the same Demo Track experience     |
-| `/presets`            | Browse built-in + guest-local presets                 |
-| `/presets/[presetId]` | Edit / live-preview a preset (local only)             |
-| `/offline`            | PWA offline fallback                                  |
-
-## Runtime today
-
-Local browser only. Feature frames are not broadcast. Guest presets use `localStorage`. No Supabase realtime, no music OAuth, no microphone capture. Album artwork is placeholder or user-selected local files only (never uploaded).
+- **Without Supabase env:** memory session store + SSE event fanout (local/CI)
+- **With Supabase env:** same HTTP APIs; schema ready for service-role persistence (Realtime channel name `session:{id}`)
+- Feature frames / FFT / mic / images are never transmitted
 
 ## Validation
-
-From the repo root:
 
 ```bash
 pnpm format:check
@@ -47,11 +45,6 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
-```
-
-Optional browser smoke (after build):
-
-```bash
 pnpm --filter @prism/web exec playwright install chromium
 pnpm --filter @prism/web test:e2e
 ```

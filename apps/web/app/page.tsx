@@ -18,11 +18,17 @@ export default function HomePage() {
           synchronized displays next.
         </p>
         <div className="mt-10 flex flex-wrap items-center gap-3">
-          <Link href="/demo" className="prism-btn prism-btn-primary">
+          <Link href="/start" className="prism-btn prism-btn-primary">
+            Start session
+          </Link>
+          <Link href="/demo" className="prism-btn prism-btn-ghost">
             Enter demo shell
           </Link>
           <Link href="/app" className="prism-btn prism-btn-ghost">
             Combined mode
+          </Link>
+          <Link href="/join" className="prism-btn prism-btn-ghost">
+            Join
           </Link>
           <Link href="/presets" className="prism-btn prism-btn-ghost">
             Presets
