@@ -31,8 +31,11 @@ vi.mock("@/components/demo-experience", () => ({
 import DemoShellPage from "@/app/demo/page";
 
 describe("DemoShellPage", () => {
-  it("renders Demo Track experience with a Play control", () => {
-    render(<DemoShellPage />);
+  it("renders Demo Track experience with a Play control", async () => {
+    const ui = await DemoShellPage({
+      searchParams: Promise.resolve({}),
+    });
+    render(ui);
     expect(screen.getByRole("heading", { name: "Spectrum" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /play/i })).toBeTruthy();
   });

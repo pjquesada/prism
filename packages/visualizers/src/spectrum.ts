@@ -70,7 +70,7 @@ class SpectrumInstance implements VisualizerInstance {
 
     this.beatPulse = Math.max(this.beatPulse * (props.reducedMotion ? 0.7 : 0.85), beatBoost);
 
-    const span = Math.max(this.width / 50, 8);
+    const span = 10;
     const gap = params.barGap;
     const totalGap = gap * (this.bars.length - 1);
     const barWidth = (span - totalGap) / Math.max(this.bars.length, 1);
@@ -94,7 +94,6 @@ class SpectrumInstance implements VisualizerInstance {
     }
 
     this.root.rotation.z = props.reducedMotion ? 0 : props.features.beatPhase * 0.02;
-    void this.height;
   }
 
   setQuality(tier: QualityTier): void {
@@ -145,6 +144,7 @@ export const spectrumPlugin: VisualizerPlugin = {
   paramsSchema: spectrumParamsSchema,
   supportsAlbumArt: false,
   supportsDreamscapeKeyframes: false,
+  preferredCamera: "perspective",
   mount(ctx) {
     return new SpectrumInstance(ctx);
   },

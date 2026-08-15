@@ -259,6 +259,9 @@ export function buildFeatureFrame(
     bands: envelope.bands,
     energy: envelope.energy,
     onset,
+    bass: envelope.bass,
+    mid: envelope.mid,
+    high: envelope.high,
   };
 
   return {

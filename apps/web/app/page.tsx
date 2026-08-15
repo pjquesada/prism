@@ -24,6 +24,9 @@ export default function HomePage() {
           <Link href="/app" className="prism-btn prism-btn-ghost">
             Combined mode
           </Link>
+          <Link href="/presets" className="prism-btn prism-btn-ghost">
+            Presets
+          </Link>
           <Link href="/offline" className="prism-btn prism-btn-ghost">
             Offline fallback
           </Link>
