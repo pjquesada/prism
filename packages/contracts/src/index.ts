@@ -43,3 +43,11 @@ export function createSilentFeatureFrame(timestampMs = 0, bandCount = 32): Audio
     onset: false,
   };
 }
+
+export {
+  spectrumParamsDefaults,
+  spectrumParamsSchema,
+  visualizerPluginMetaSchema,
+  type SpectrumParams,
+  type VisualizerPluginMeta,
+} from "./spectrum.js";

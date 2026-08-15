@@ -4,9 +4,7 @@ Atmospheric multi-device music visualizer companion.
 
 ## Status
 
-**Phase 1A** — repository and PWA foundation (in progress / landing).
-
-Later phases add Demo Track audio, visualizers, sessions, Live Listen, mock Dreamscape, and Android TV.
+**Phase 1B** — Demo Track, audio-engine feature frames, and Spectrum visualizer.
 
 ## Requirements
 
@@ -22,7 +20,7 @@ pnpm dev
 
 Web app: [http://localhost:3000](http://localhost:3000)
 
-Phase 1A routes: `/` (entry), `/demo` (local demo shell), `/app` (combined mode), `/offline`.
+Routes: `/` (entry), `/demo` (Demo Track + Spectrum), `/app` (combined mode), `/offline`.
 
 ## Scripts
 
@@ -36,19 +34,28 @@ Phase 1A routes: `/` (entry), `/demo` (local demo shell), `/app` (combined mode)
 | `pnpm format`       | Prettier write                  |
 | `pnpm format:check` | Prettier check                  |
 
+Demo Track regeneration:
+
+```bash
+node scripts/generate-demo-track.mjs
+```
+
 ## Monorepo layout
 
 ```text
-apps/web              Next.js App Router PWA
-packages/config       Shared TS / ESLint / Tailwind tooling
-packages/contracts    Zod schemas and domain types
-packages/ui           Shared UI stub primitives
-docs/                 Architecture and phase notes
+apps/web                 Next.js App Router PWA
+packages/audio-engine    Web Audio Demo Track + feature frames
+packages/visual-engine   R3F host + visualizer plugin contract
+packages/visualizers     Spectrum (and later visualizers)
+packages/config          Shared TS / ESLint / Tailwind tooling
+packages/contracts       Zod schemas and domain types
+packages/ui              Shared UI stub primitives
+docs/                    Architecture and phase notes
 ```
 
 ## Environment
 
-Copy `.env.example` to `apps/web/.env.local` when you need local values. Phase 1A does not require Supabase or AI keys—placeholders are documented for later phases only. Never put secrets in `NEXT_PUBLIC_*`.
+Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + Spectrum do not require API keys. Never put secrets in `NEXT_PUBLIC_*`.
 
 ## Spec
 

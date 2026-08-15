@@ -9,7 +9,13 @@ const withSerwist = withSerwistInit({
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ["@prism/ui", "@prism/contracts"],
+  transpilePackages: [
+    "@prism/ui",
+    "@prism/contracts",
+    "@prism/audio-engine",
+    "@prism/visual-engine",
+    "@prism/visualizers",
+  ],
 };
 
 export default withSerwist(nextConfig);

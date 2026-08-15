@@ -5,9 +5,17 @@
     "paths": {
       "@/*": ["./*"]
     },
-    "plugins": [{ "name": "next" }],
-    "types": ["node"]
+    "plugins": [{ "name": "next" }]
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", ".next", "public/sw.js", "**/*.test.ts", "**/*.test.tsx"]
+  "exclude": [
+    "node_modules",
+    ".next",
+    "public/sw.js",
+    "app/sw.ts",
+    "e2e",
+    "playwright.config.ts",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ]
 }
