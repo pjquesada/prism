@@ -1,0 +1,74 @@
+---
+description: Permanent Prism development rules — read build spec, phase gating, safety, and completion checklist
+alwaysApply: true
+---
+
+# Prism development rules
+
+These rules permanently govern all work in this repository.
+
+## Source of truth
+
+- Read the build specification (`CURSOR-BUILD-SPEC-AI-MUSIC-VISUALIZER.md`) before planning or implementing features.
+- Treat the build specification as authoritative for product scope, architecture, constraints, and phase acceptance criteria.
+- If instructions conflict, prefer the build specification and these rules over assumptions.
+
+## Phase discipline
+
+- Work on only the explicitly requested phase (1A–1G or a later named phase).
+- Never continue into another phase without user approval.
+- After every phase: run formatting, lint, type-checking, tests, and a production build; summarize results; then stop and wait.
+- Do not “helpfully” scaffold future-phase packages, providers, or screens unless the current phase requires them.
+
+## Code change hygiene
+
+- Inspect existing code before editing.
+- Preserve unrelated work; do not rewrite clean code for style-only preferences.
+- Ask before making major architecture changes (new apps, new top-level packages, protocol redesigns, provider choices, schema breaks).
+- Prefer small, reviewable diffs aligned to the active phase acceptance criteria.
+
+## TypeScript and validation
+
+- Use strict TypeScript and avoid `any`. If an escape hatch seems unavoidable, stop and ask first.
+- Validate network and realtime boundaries with Zod schemas from `packages/contracts` (or the phase-appropriate contracts location).
+- Keep shared domain types and protocol messages in contracts—not duplicated ad hoc in UI files.
+
+## Security and privacy
+
+- Never expose secrets to clients. No service-role keys, AI keys, or other secrets in `NEXT_PUBLIC_*` or client bundles.
+- Never invent unsupported music-provider capabilities. No production Spotify / Apple Music / SoundCloud / Pandora integrations unless a later approved phase explicitly adds them.
+- Never record, save, or transmit microphone audio. Live Listen is on-device analysis only; only numeric feature frames may cross process/network boundaries.
+- Prism must not stream, download, proxy, record, or redistribute copyrighted music.
+
+## Architecture boundaries
+
+- Keep music providers behind `packages/provider-adapters`.
+- Keep AI providers behind `packages/ai-adapters`.
+- Visualizers must implement the plugin contract and dispose all GPU/resources.
+- Audio-engine, visual-engine, and sync-engine stay package-bounded; apps orchestrate, packages implement.
+
+## Resource lifecycle and UX states
+
+- Dispose audio nodes, media elements, WebGL/Three resources, subscriptions, timers, and event listeners on unmount/route change.
+- Include loading, empty, denied-permission, offline, error, and fallback states for every touched flow that can fail or wait.
+
+## Completion checklist (every phase)
+
+Before claiming completion:
+
+1. Run formatting, lint, type-checking, tests, and a production build.
+2. Confirm the phase acceptance criteria in the build specification.
+3. Report:
+   - files changed
+   - commands run
+   - results
+   - manual verification steps
+   - limitations
+   - recommended next phase
+4. Stop and wait for approval before continuing.
+
+## Explicit non-goals unless approved
+
+- Do not initialize or expand product scope beyond the requested phase.
+- Do not add billing, social feeds, lyrics, creator marketplace, full AI video generation, or native desktop system-audio capture.
+- Do not add Tizen, webOS, Roku, or Apple TV apps during MVP phases.
