@@ -1,8 +1,23 @@
-import { readSupabasePublicEnv } from "@prism/db";
+import { readSupabaseAdminEnv, readSupabasePublicEnv } from "@prism/db";
 
-/** True when public Supabase env is present. Session APIs still work via memory store otherwise. */
+export type SessionTransportKind = "memory" | "supabase";
+
+/** True when public Supabase env is present (Realtime client possible). */
 export function isRealtimeConfigured(): boolean {
   return readSupabasePublicEnv() !== null;
+}
+
+/**
+ * Durable cross-instance sessions require the service-role admin client.
+ * Public-only env is not enough — claiming "supabase" without persistence caused
+ * production pairing failures on Vercel.
+ */
+export function isDurableSessionBackend(): boolean {
+  return readSupabaseAdminEnv() !== null;
+}
+
+export function getSessionTransport(): SessionTransportKind {
+  return isDurableSessionBackend() ? "supabase" : "memory";
 }
 
 export function getAppUrl(): string {

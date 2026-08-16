@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   defaultParamsForVisualizer,
   type DisplayMode,
@@ -15,8 +15,8 @@ import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
 import { SessionVisualizerStage } from "@/components/session/session-visualizer-stage";
 import {
-  loadStoredCredential,
   storeCredential,
+  takeCredentialForSession,
   useSessionClient,
 } from "@/lib/session/use-session-client";
 
@@ -26,34 +26,43 @@ const VISUALIZERS: { id: VisualizerId; label: string }[] = [
   { id: "album_world", label: "Album World" },
 ];
 
-function subscribeNoop(): () => void {
-  return () => undefined;
-}
-
-function readCredentialJson(sessionId: string): string | null {
-  const cred = loadStoredCredential();
-  if (!cred || cred.sessionId !== sessionId) return null;
-  return JSON.stringify(cred);
-}
-
 export function ControllerSessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
-  const credentialJson = useSyncExternalStore(
-    subscribeNoop,
-    () => readCredentialJson(sessionId),
-    () => null,
-  );
-  const credential = credentialJson ? (JSON.parse(credentialJson) as GuestCredential) : null;
+  const [credential, setCredential] = useState<GuestCredential | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreStarted, setRestoreStarted] = useState(false);
+  const attemptedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!credential) return;
-    void client.restore(credential).catch((err) => {
+    if (!sessionId) return;
+    if (attemptedSessionRef.current === sessionId) return;
+    attemptedSessionRef.current = sessionId;
+    setRestoreStarted(true);
+
+    const existing = takeCredentialForSession(sessionId);
+    setCredential(existing);
+
+    const run = existing
+      ? client.restore(existing)
+      : client.restoreWithCookie(sessionId).then(() => {
+          const fromState = client.getState();
+          if (fromState.localDeviceId && fromState.localRole) {
+            setCredential({
+              token: "",
+              sessionId,
+              deviceId: fromState.localDeviceId,
+              role: fromState.localRole,
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            });
+          }
+        });
+
+    void run.catch((err) => {
       setRestoreError(err instanceof Error ? err.message : "restore_failed");
     });
-  }, [client, credential]);
+  }, [client, sessionId]);
 
   const joinUrl =
     sync.snapshot?.pairingCode && typeof window !== "undefined"
@@ -96,7 +105,34 @@ export function ControllerSessionPanel() {
 
   const isController = sync.localRole === "controller" || sync.localRole === "combined";
 
-  if (!credential || restoreError === "unauthorized" || sync.connection === "unauthorized") {
+  if (!restoreStarted || (!credential && sync.connection === "connecting")) {
+    return (
+      <div className="flex flex-col gap-4">
+        <ConnectionBanner status={sync.connection === "idle" ? "connecting" : sync.connection} />
+        <p className="text-prism-mist" role="status">
+          Restoring session…
+        </p>
+      </div>
+    );
+  }
+
+  if (restoreError === "unauthorized" || sync.connection === "unauthorized") {
+    return (
+      <div className="flex flex-col gap-4">
+        <p className="text-prism-ember" role="alert">
+          Unauthorized for this session. Start or join again.
+        </p>
+        <Link href="/start" className="prism-btn prism-btn-primary w-fit">
+          Start a session
+        </Link>
+      </div>
+    );
+  }
+
+  if (
+    !credential &&
+    (restoreError || sync.connection === "offline" || sync.connection === "idle")
+  ) {
     return (
       <div className="flex flex-col gap-4">
         <p className="text-prism-ember" role="alert">

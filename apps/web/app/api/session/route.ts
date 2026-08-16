@@ -1,24 +1,35 @@
-import { SessionServiceError, createGuestSession } from "@/lib/session/memory-store";
-import { createSessionBodySchema, jsonError } from "@/lib/session/api-helpers";
-import { buildJoinUrl, isRealtimeConfigured } from "@/lib/session/config";
+import {
+  SessionServiceError,
+  createGuestSession,
+  resolveSessionTransport,
+} from "@/lib/session/session-service";
+import {
+  createSessionBodySchema,
+  jsonError,
+  jsonWithGuestCredential,
+} from "@/lib/session/api-helpers";
+import { buildJoinUrl } from "@/lib/session/config";
 
 export async function POST(request: Request): Promise<Response> {
   try {
     const body = createSessionBodySchema.parse(await request.json().catch(() => ({})));
-    const created = createGuestSession({
+    const created = await createGuestSession({
       role: body.role,
       displayMode: body.displayMode,
       hostDeviceId: body.hostDeviceId,
     });
-    return Response.json({
-      sessionId: created.snapshot.session.id,
-      snapshot: created.snapshot,
-      credential: created.credential,
-      pairingCode: created.pairingCode,
-      pairingExpiresAt: created.pairingExpiresAt,
-      joinUrl: buildJoinUrl(created.pairingCode),
-      transport: isRealtimeConfigured() ? "supabase" : "memory",
-    });
+    return jsonWithGuestCredential(
+      {
+        sessionId: created.snapshot.session.id,
+        snapshot: created.snapshot,
+        credential: created.credential,
+        pairingCode: created.pairingCode,
+        pairingExpiresAt: created.pairingExpiresAt,
+        joinUrl: buildJoinUrl(created.pairingCode),
+        transport: resolveSessionTransport(),
+      },
+      created.credential,
+    );
   } catch (error) {
     if (error instanceof SessionServiceError) {
       return jsonError(error.code, error.message, error.status);

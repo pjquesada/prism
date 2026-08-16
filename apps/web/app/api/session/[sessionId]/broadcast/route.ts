@@ -1,11 +1,11 @@
 import { MAX_SESSION_EVENT_BYTES, sessionMessageSchema } from "@prism/contracts";
 import { assertPayloadSize } from "@prism/sync-engine";
 
-import { SessionServiceError, publishAuthorizedMessage } from "@/lib/session/memory-store";
+import { SessionServiceError, publishAuthorizedMessage } from "@/lib/session/session-service";
 import {
   assertSafeSessionPayload,
   broadcastBodySchema,
-  getBearerToken,
+  getGuestTokenFromRequest,
   jsonError,
 } from "@/lib/session/api-helpers";
 
@@ -14,7 +14,7 @@ type RouteContext = { params: Promise<{ sessionId: string }> };
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
     const { sessionId } = await context.params;
-    const token = getBearerToken(request);
+    const token = getGuestTokenFromRequest(request);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const raw = await request.json();
     assertPayloadSize(raw, MAX_SESSION_EVENT_BYTES);
@@ -24,7 +24,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     if (message.sessionId !== sessionId) {
       return jsonError("unauthorized", "Unauthorized.", 401);
     }
-    const stamped = publishAuthorizedMessage(token, message);
+    const stamped = await publishAuthorizedMessage(token, message);
     return Response.json({ message: stamped });
   } catch (error) {
     if (error instanceof SessionServiceError) {
