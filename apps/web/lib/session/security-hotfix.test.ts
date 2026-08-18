@@ -74,7 +74,8 @@ describe("security hotfix migration and source scan", () => {
     expect(hotfix).toMatch(/drop column if exists code/i);
     expect(hotfix).toMatch(/drop column if exists code_hint/i);
     expect(hotfix).toMatch(/revoked_at/);
-    expect(hotfix).toMatch(/intentionally invalidated/i);
+    expect(hotfix).toMatch(/Intentionally invalidates ALL active guest sessions/i);
+    expect(hotfix).toMatch(/intentionally wiped/i);
     expect(hotfix).not.toMatch(/digest\(/i);
     expect(hotfix).not.toMatch(/encode\(digest/i);
   });

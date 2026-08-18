@@ -38,7 +38,7 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
     private readonly table: keyof FakeSessionDatabase,
   ) {}
 
-  select(_columns?: string): this {
+  select(): this {
     this.action = "select";
     return this;
   }
@@ -182,10 +182,10 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
       if (!this.payload) throw new Error("missing upsert payload");
       this.assertNoForbidden(this.payload);
       const table = this.rows();
+      const payload = this.payload;
       if (this.table === "session_credentials") {
         const idx = table.findIndex(
-          (row) =>
-            row.session_id === this.payload?.session_id && row.device_id === this.payload.device_id,
+          (row) => row.session_id === payload.session_id && row.device_id === payload.device_id,
         );
         if (idx >= 0) {
           table[idx] = { ...table[idx], ...this.payload };
