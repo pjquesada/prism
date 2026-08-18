@@ -3,7 +3,10 @@ import { z } from "zod";
 import { deviceRoleSchema, displayModeSchema, sessionMessageSchema } from "@prism/contracts";
 import { containsForbiddenPayloadKeys, normalizePairingCodeInput } from "@prism/sync-engine";
 
-export const GUEST_CREDENTIAL_COOKIE = "prism_guest_cred";
+import { getAppUrl } from "@/lib/session/config";
+import { SessionServiceError } from "@/lib/session/errors";
+
+export const GUEST_CREDENTIAL_COOKIE_PREFIX = "prism_guest_";
 
 export const createSessionBodySchema = z.object({
   role: deviceRoleSchema.default("combined"),
@@ -25,6 +28,12 @@ export const handoffBodySchema = z.object({
 export const broadcastBodySchema = z.object({
   message: sessionMessageSchema,
 });
+
+export const sessionIdParamSchema = z.string().uuid();
+
+export function guestCredentialCookieName(sessionId: string): string {
+  return `${GUEST_CREDENTIAL_COOKIE_PREFIX}${sessionId}`;
+}
 
 export function parseJoinCode(raw: string): string {
   return normalizePairingCodeInput(raw);
@@ -61,47 +70,62 @@ function getCookie(request: Request, name: string): string | null {
   return null;
 }
 
-/** Bearer token wins; HttpOnly cookie is the private-Safari / storage-blocked fallback. */
-export function getGuestTokenFromRequest(request: Request): string | null {
-  return getBearerToken(request) ?? getCookie(request, GUEST_CREDENTIAL_COOKIE);
+/**
+ * Session-scoped HttpOnly cookie is authoritative for browsers.
+ * Optional Bearer token is for same-origin tests that hold the mint response.
+ */
+export function getGuestTokenFromRequest(request: Request, sessionId: string): string | null {
+  const cookieToken = getCookie(request, guestCredentialCookieName(sessionId));
+  const bearer = getBearerToken(request);
+  return cookieToken ?? bearer;
 }
 
-export function guestCredentialSetCookieHeader(token: string, expiresAt: string): string {
-  const maxAge = Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000));
-  const secure =
+function cookieSecure(): boolean {
+  return (
     process.env.NODE_ENV === "production" ||
     process.env.VERCEL === "1" ||
-    process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") === true;
+    process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") === true
+  );
+}
+
+export function guestCredentialSetCookieHeader(
+  sessionId: string,
+  token: string,
+  expiresAt: string,
+): string {
+  const maxAge = Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000));
   const parts = [
-    `${GUEST_CREDENTIAL_COOKIE}=${encodeURIComponent(token)}`,
-    "Path=/",
+    `${guestCredentialCookieName(sessionId)}=${encodeURIComponent(token)}`,
+    "Path=/api/session",
     "HttpOnly",
     "SameSite=Lax",
     `Max-Age=${maxAge}`,
   ];
-  if (secure) parts.push("Secure");
+  if (cookieSecure()) parts.push("Secure");
   return parts.join("; ");
 }
 
-export function guestCredentialClearCookieHeader(): string {
-  const secure =
-    process.env.NODE_ENV === "production" ||
-    process.env.VERCEL === "1" ||
-    process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") === true;
-  const parts = [`${GUEST_CREDENTIAL_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
-  if (secure) parts.push("Secure");
+export function guestCredentialClearCookieHeader(sessionId: string): string {
+  const parts = [
+    `${guestCredentialCookieName(sessionId)}=`,
+    "Path=/api/session",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+  if (cookieSecure()) parts.push("Secure");
   return parts.join("; ");
 }
 
 export function jsonWithGuestCredential(
   body: unknown,
-  credential: { token: string; expiresAt: string },
+  credential: { token: string; sessionId: string; expiresAt: string },
   init?: { status?: number },
 ): Response {
   const response = Response.json(body, { status: init?.status });
   response.headers.append(
     "Set-Cookie",
-    guestCredentialSetCookieHeader(credential.token, credential.expiresAt),
+    guestCredentialSetCookieHeader(credential.sessionId, credential.token, credential.expiresAt),
   );
   return response;
 }
@@ -112,4 +136,34 @@ export function getClientIp(request: Request): string {
     request.headers.get("x-real-ip") ||
     "local"
   );
+}
+
+export function assertMutatingSameOrigin(request: Request): void {
+  if (request.method === "GET" || request.method === "HEAD") return;
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    if (
+      process.env.NODE_ENV === "production" &&
+      process.env.PRISM_ALLOW_MEMORY_SESSIONS !== "true"
+    ) {
+      throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
+    }
+    return;
+  }
+  let expectedHost: string;
+  try {
+    expectedHost = new URL(getAppUrl()).host;
+  } catch {
+    expectedHost = request.headers.get("host") ?? "";
+  }
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
+  }
+  const requestHost = request.headers.get("host");
+  if (originHost !== expectedHost && originHost !== requestHost) {
+    throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
+  }
 }

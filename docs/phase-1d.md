@@ -34,8 +34,11 @@ Live Listen / microphone, Dreamscape / AI, provider OAuth, Android TV, full user
 ## Manual checks
 
 1. `pnpm install && pnpm build`
-2. Open `/start` → Start guest session → note code/QR
-3. Second browser / phone: `/join` with code → display updates when controller switches visualizer
-4. Toggle Mirror / Complementary; hand off controller; end session
-5. Without Supabase env, Demo routes (`/demo`, `/app`) still work
-6. Apply `supabase/migrations/20260815000000_phase1d_sessions.sql` when you create a project
+2. Set `SESSION_SIGNING_SECRET` (and, in production, Supabase service-role env). For local memory: `PRISM_SESSION_BACKEND=memory`.
+3. Open `/start` → Start guest session → note code/QR
+4. Second browser / phone: `/join` with code → display updates when controller switches visualizer
+5. Toggle Mirror / Complementary; hand off controller; end session
+6. Demo routes (`/demo`, `/app`) still work without a session
+7. Apply `supabase/migrations/20260815000000_phase1d_sessions.sql`, `20260816000000_phase1d_session_credentials.sql`, then `20260818120000_phase1d_security_hotfix.sql` on a new project
+
+See [phase-1d-security-hotfix.md](./phase-1d-security-hotfix.md) for pairing HMAC, cookies, and rollout order.

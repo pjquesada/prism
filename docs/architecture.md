@@ -33,8 +33,8 @@ Prism is a pnpm + Turborepo monorepo. Apps orchestrate; packages implement bound
 
 ## Runtime
 
-- **Without Supabase env:** memory session store + snapshot polling (local/CI)
-- **With Supabase env:** same HTTP APIs; schema ready for service-role persistence (Realtime channel name `session:{id}`)
+- **Production:** Supabase service role + `SESSION_SIGNING_SECRET`; HTTP APIs persist HMAC pairing digests and credential digests. Missing secrets fail closed.
+- **Local/tests:** `PRISM_SESSION_BACKEND=memory` (explicit) + signing secret; snapshot polling
 - Feature frames / FFT / mic / images are never transmitted
 - Memory transport applies broadcast responses locally and polls snapshots (~1s) for multi-device sync
 

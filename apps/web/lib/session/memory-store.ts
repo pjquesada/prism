@@ -1,18 +1,29 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import {
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
   defaultParamsForVisualizer,
+  publicGuestIdentitySchema,
+  sessionSnapshotSchema,
   type DeviceRole,
   type DisplayMode,
   type GuestCredential,
+  type PublicGuestIdentity,
   type SessionMessage,
   type SessionSnapshot,
 } from "@prism/contracts";
 import { generatePairingCode } from "@prism/sync-engine";
 
+import { getSessionSigningSecret } from "@/lib/session/config";
+import {
+  digestGuestCredential,
+  digestPairingCode,
+  generateGuestCredentialSecret,
+  normalizeAndValidatePairingCode,
+  timingSafeDigestEqual,
+} from "@/lib/session/crypto";
 import { SessionServiceError, type SessionErrorCode } from "@/lib/session/errors";
 
 export type { SessionErrorCode };
@@ -21,15 +32,15 @@ export { SessionServiceError };
 type StoredDevice = SessionSnapshot["devices"][number];
 
 type StoredPairing = {
-  code: string;
-  codeHash: string;
+  codeHmac: string;
   attempts: number;
   maxAttempts: number;
   expiresAt: string;
   consumedAt: string | null;
+  revokedAt: string | null;
 };
 
-type StoredCredential = GuestCredential & { secret: string };
+type StoredCredential = GuestCredential & { secretHmac: string };
 
 type StoredSession = {
   snapshot: SessionSnapshot;
@@ -40,38 +51,21 @@ type StoredSession = {
 };
 
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
-const JOIN_RATE_LIMIT = 20;
-const JOIN_RATE_WINDOW_MS = 60_000;
 
 type GlobalStore = {
   sessions: Map<string, StoredSession>;
-  joinAttemptsByIp: Map<string, { count: number; windowStart: number }>;
 };
 
 function getStore(): GlobalStore {
   const g = globalThis as typeof globalThis & { __prismSessionStore?: GlobalStore };
   if (!g.__prismSessionStore) {
-    g.__prismSessionStore = { sessions: new Map(), joinAttemptsByIp: new Map() };
-  }
-  if (!g.__prismSessionStore.joinAttemptsByIp) {
-    g.__prismSessionStore.joinAttemptsByIp = new Map();
+    g.__prismSessionStore = { sessions: new Map() };
   }
   return g.__prismSessionStore;
 }
 
 function nowIso(ms = Date.now()): string {
   return new Date(ms).toISOString();
-}
-
-function hashCode(code: string): string {
-  return createHash("sha256").update(code).digest("hex");
-}
-
-function hashEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 function newId(): string {
@@ -103,7 +97,7 @@ function defaultSnapshot(input: {
   const createdAt = nowIso();
   const expiresAt = nowIso(Date.now() + SESSION_TTL_MS);
   const deviceRowId = newId();
-  return {
+  return sessionSnapshotSchema.parse({
     session: {
       id: input.sessionId,
       hostDeviceId: input.hostDeviceId,
@@ -144,7 +138,7 @@ function defaultSnapshot(input: {
       updatedAt: createdAt,
       seq: 1,
     },
-  };
+  });
 }
 
 function mintCredential(input: {
@@ -152,26 +146,26 @@ function mintCredential(input: {
   deviceId: string;
   role: DeviceRole;
 }): StoredCredential {
-  const secret = randomBytes(24).toString("base64url");
+  const secret = generateGuestCredentialSecret();
   const expiresAt = nowIso(Date.now() + GUEST_CREDENTIAL_TTL_MS);
+  const signingSecret = getSessionSigningSecret();
   return {
     token: `${input.sessionId}.${input.deviceId}.${secret}`,
     sessionId: input.sessionId,
     deviceId: input.deviceId,
     role: input.role,
     expiresAt,
-    secret,
+    secretHmac: digestGuestCredential(secret, signingSecret),
   };
 }
 
-function publicCredential(cred: StoredCredential): GuestCredential {
-  return {
-    token: cred.token,
+export function publicIdentity(cred: GuestCredential): PublicGuestIdentity {
+  return publicGuestIdentitySchema.parse({
     sessionId: cred.sessionId,
     deviceId: cred.deviceId,
     role: cred.role,
     expiresAt: cred.expiresAt,
-  };
+  });
 }
 
 function getSessionOrThrow(sessionId: string): StoredSession {
@@ -187,21 +181,6 @@ function getSessionOrThrow(sessionId: string): StoredSession {
     throw new SessionServiceError("ended", "Session has ended.", 410);
   }
   return session;
-}
-
-function enforceJoinRateLimit(ip: string): void {
-  const store = getStore();
-  const now = Date.now();
-  const entry = store.joinAttemptsByIp.get(ip) ?? { count: 0, windowStart: now };
-  if (now - entry.windowStart > JOIN_RATE_WINDOW_MS) {
-    entry.count = 0;
-    entry.windowStart = now;
-  }
-  entry.count += 1;
-  store.joinAttemptsByIp.set(ip, entry);
-  if (entry.count > JOIN_RATE_LIMIT) {
-    throw new SessionServiceError("rate_limited", "Too many join attempts. Try again later.", 429);
-  }
 }
 
 export function createGuestSession(input: {
@@ -222,20 +201,17 @@ export function createGuestSession(input: {
   const code = generatePairingCode((size) => randomBytes(size));
   const pairingExpiresAt = nowIso(Date.now() + PAIRING_CODE_TTL_MS);
   const credential = mintCredential({ sessionId, deviceId: hostDeviceId, role });
+  const signingSecret = getSessionSigningSecret();
 
   const stored: StoredSession = {
-    snapshot: {
-      ...snapshot,
-      pairingCode: code,
-      pairingExpiresAt,
-    },
+    snapshot,
     pairing: {
-      code,
-      codeHash: hashCode(code),
+      codeHmac: digestPairingCode(code, signingSecret),
       attempts: 0,
       maxAttempts: PAIRING_MAX_ATTEMPTS,
       expiresAt: pairingExpiresAt,
       consumedAt: null,
+      revokedAt: null,
     },
     credentials: new Map([[hostDeviceId, credential]]),
     seq: 1,
@@ -245,36 +221,36 @@ export function createGuestSession(input: {
 
   return {
     snapshot: stored.snapshot,
-    credential: publicCredential(credential),
+    credential,
     pairingCode: code,
     pairingExpiresAt,
   };
 }
 
-export function rotatePairingCode(
-  sessionId: string,
-  deviceId: string,
-): {
+export function rotatePairingCode(token: string): {
   pairingCode: string;
   pairingExpiresAt: string;
 } {
-  const session = getSessionOrThrow(sessionId);
-  const cred = session.credentials.get(deviceId);
-  if (!cred || (cred.role !== "controller" && cred.role !== "combined")) {
+  const cred = authorizeCredential(token);
+  if (cred.role !== "controller" && cred.role !== "combined") {
     throw new SessionServiceError("unauthorized", "Only the controller can rotate codes.", 401);
+  }
+  const session = getSessionOrThrow(cred.sessionId);
+  const now = nowIso();
+  if (session.pairing && !session.pairing.consumedAt) {
+    session.pairing.consumedAt = now;
+    session.pairing.revokedAt = now;
   }
   const code = generatePairingCode((size) => randomBytes(size));
   const pairingExpiresAt = nowIso(Date.now() + PAIRING_CODE_TTL_MS);
   session.pairing = {
-    code,
-    codeHash: hashCode(code),
+    codeHmac: digestPairingCode(code, getSessionSigningSecret()),
     attempts: 0,
     maxAttempts: PAIRING_MAX_ATTEMPTS,
     expiresAt: pairingExpiresAt,
     consumedAt: null,
+    revokedAt: null,
   };
-  session.snapshot.pairingCode = code;
-  session.snapshot.pairingExpiresAt = pairingExpiresAt;
   return { pairingCode: code, pairingExpiresAt };
 }
 
@@ -288,30 +264,30 @@ export function joinWithPairingCode(input: {
   snapshot: SessionSnapshot;
   credential: GuestCredential;
 } {
-  const normalized = input.code.trim().toUpperCase();
-  const ip = input.ip ?? "unknown";
-  const candidateHash = hashCode(normalized);
-  enforceJoinRateLimit(ip);
+  const normalized = normalizeAndValidatePairingCode(input.code);
+  if (!normalized) {
+    throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
+  }
+  const candidateHmac = digestPairingCode(normalized, getSessionSigningSecret());
 
-  // Scan active pairings without revealing which codes exist.
   let matched: StoredSession | null = null;
   for (const session of getStore().sessions.values()) {
-    if (!session.pairing || session.pairing.consumedAt) continue;
+    if (!session.pairing || session.pairing.consumedAt || session.pairing.revokedAt) continue;
     if (session.snapshot.session.status !== "active") continue;
     if (Date.parse(session.pairing.expiresAt) < Date.now()) continue;
     if (session.pairing.attempts >= session.pairing.maxAttempts) continue;
-    if (hashEqual(session.pairing.codeHash, candidateHash)) {
+    if (timingSafeDigestEqual(session.pairing.codeHmac, candidateHmac)) {
       matched = session;
       break;
     }
   }
 
   if (!matched || !matched.pairing) {
-    // Burn an attempt on a random active pairing when possible (anti-enumeration).
     for (const session of getStore().sessions.values()) {
       if (
         session.pairing &&
         !session.pairing.consumedAt &&
+        !session.pairing.revokedAt &&
         session.snapshot.session.status === "active"
       ) {
         session.pairing.attempts += 1;
@@ -372,12 +348,8 @@ export function joinWithPairingCode(input: {
   publish(matched, joined);
 
   return {
-    snapshot: {
-      ...matched.snapshot,
-      pairingCode: undefined,
-      pairingExpiresAt: undefined,
-    },
-    credential: publicCredential(credential),
+    snapshot: matched.snapshot,
+    credential,
   };
 }
 
@@ -394,7 +366,12 @@ export function authorizeCredential(token: string): StoredCredential {
     throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
   }
   const cred = session.credentials.get(deviceId);
-  if (!cred || cred.secret !== secret || Date.parse(cred.expiresAt) < Date.now()) {
+  const candidateHmac = digestGuestCredential(secret, getSessionSigningSecret());
+  if (
+    !cred ||
+    !timingSafeDigestEqual(cred.secretHmac, candidateHmac) ||
+    Date.parse(cred.expiresAt) < Date.now()
+  ) {
     throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
   }
   if (session.snapshot.session.status === "ended") {
@@ -406,12 +383,7 @@ export function authorizeCredential(token: string): StoredCredential {
 export function getSnapshotForCredential(token: string): SessionSnapshot {
   const cred = authorizeCredential(token);
   const session = getSessionOrThrow(cred.sessionId);
-  const isController = cred.role === "controller" || cred.role === "combined";
-  return {
-    ...session.snapshot,
-    pairingCode: isController ? session.snapshot.pairingCode : undefined,
-    pairingExpiresAt: isController ? session.snapshot.pairingExpiresAt : undefined,
-  };
+  return sessionSnapshotSchema.parse(session.snapshot);
 }
 
 export function heartbeat(token: string): SessionSnapshot {
@@ -434,6 +406,10 @@ export function endSession(token: string): void {
   session.snapshot.session.status = "ended";
   session.snapshot.session.closedAt = now;
   session.snapshot.session.updatedAt = now;
+  if (session.pairing) {
+    session.pairing.consumedAt = session.pairing.consumedAt ?? now;
+    session.pairing.revokedAt = now;
+  }
   const seq = nextSeq(session);
   publish(session, {
     type: "error",
@@ -503,14 +479,12 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
     throw new SessionServiceError("unauthorized", "Displays cannot publish control events.", 401);
   }
 
-  // Apply authoritative state for control messages
   const now = nowIso();
   const seq = nextSeq(session);
   const stamped: SessionMessage = { ...message, seq, sentAt: now };
 
   switch (stamped.type) {
     case "ping": {
-      // Echo pong for clock sync samples.
       const received = Date.now();
       publish(session, {
         type: "pong",
@@ -573,8 +547,19 @@ export function subscribeSession(
   };
 }
 
+export function inspectPairingStoreForTests(sessionId: string): StoredPairing | null {
+  return getStore().sessions.get(sessionId)?.pairing ?? null;
+}
+
+export function inspectCredentialStoreForTests(
+  sessionId: string,
+  deviceId: string,
+): { secretHmac: string; token?: undefined } | null {
+  const cred = getStore().sessions.get(sessionId)?.credentials.get(deviceId);
+  if (!cred) return null;
+  return { secretHmac: cred.secretHmac };
+}
+
 export function resetSessionStoreForTests(): void {
-  const store = getStore();
-  store.sessions.clear();
-  store.joinAttemptsByIp.clear();
+  getStore().sessions.clear();
 }

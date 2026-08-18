@@ -4,20 +4,28 @@ import {
   getSnapshotForCredential,
   subscribeSession,
 } from "@/lib/session/session-service";
-import { getGuestTokenFromRequest, jsonError } from "@/lib/session/api-helpers";
+import {
+  getGuestTokenFromRequest,
+  jsonError,
+  sessionIdParamSchema,
+} from "@/lib/session/api-helpers";
 import { isDurableSessionBackend } from "@/lib/session/config";
 
 type RouteContext = { params: Promise<{ sessionId: string }> };
 
 /**
  * Memory-transport realtime: Server-Sent Events fanout for local/dev/CI.
- * Durable Supabase sessions rely on snapshot polling (cross-instance safe).
+ * Auth uses the session-scoped HttpOnly cookie (or Authorization header).
+ * Query-string tokens are rejected.
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const { sessionId } = await context.params;
+    const sessionId = sessionIdParamSchema.parse((await context.params).sessionId);
     const url = new URL(request.url);
-    const token = getGuestTokenFromRequest(request) ?? url.searchParams.get("token");
+    if (url.searchParams.has("token") || url.searchParams.has("credential")) {
+      return jsonError("unauthorized", "Unauthorized.", 401);
+    }
+    const token = getGuestTokenFromRequest(request, sessionId);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const cred = await authorizeCredential(token);
     if (cred.sessionId !== sessionId) {

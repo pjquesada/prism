@@ -2,12 +2,13 @@ import type {
   DeviceRole,
   DisplayMode,
   GuestCredential,
+  PublicGuestIdentity,
   SessionMessage,
   SessionSnapshot,
 } from "@prism/contracts";
 
-import { SessionServiceError } from "@/lib/session/errors";
 import { getSessionTransport, isDurableSessionBackend } from "@/lib/session/config";
+import { SessionServiceError } from "@/lib/session/errors";
 import {
   authorizeCredential as authorizeCredentialMemory,
   createGuestSession as createGuestSessionMemory,
@@ -16,10 +17,12 @@ import {
   handoffController as handoffControllerMemory,
   heartbeat as heartbeatMemory,
   joinWithPairingCode as joinWithPairingCodeMemory,
+  publicIdentity as publicIdentityMemory,
   publishAuthorizedMessage as publishAuthorizedMessageMemory,
   rotatePairingCode as rotatePairingCodeMemory,
   subscribeSession as subscribeSessionMemory,
 } from "@/lib/session/memory-store";
+import { enforceJoinRateLimit, enforceRotateRateLimit } from "@/lib/session/rate-limit";
 import { createOptionalAdminSupabase } from "@/lib/supabase/admin";
 import {
   authorizeCredentialDurable,
@@ -29,6 +32,7 @@ import {
   handoffControllerDurable,
   heartbeatDurable,
   joinWithPairingCodeDurable,
+  publicIdentity as publicIdentityDurable,
   publishAuthorizedMessageDurable,
   rotatePairingCodeDurable,
   type SessionAdminClient,
@@ -52,6 +56,12 @@ function requireAdminClient(): SessionAdminClient {
 
 export function resolveSessionTransport(): "memory" | "supabase" {
   return getSessionTransport();
+}
+
+export function toPublicIdentity(credential: GuestCredential): PublicGuestIdentity {
+  return isDurableSessionBackend()
+    ? publicIdentityDurable(credential)
+    : publicIdentityMemory(credential);
 }
 
 export async function createGuestSession(input: {
@@ -80,6 +90,7 @@ export async function joinWithPairingCode(input: {
   snapshot: SessionSnapshot;
   credential: GuestCredential;
 }> {
+  enforceJoinRateLimit(input.ip ?? "unknown");
   if (isDurableSessionBackend()) {
     return joinWithPairingCodeDurable(requireAdminClient(), input);
   }
@@ -87,13 +98,15 @@ export async function joinWithPairingCode(input: {
 }
 
 export async function rotatePairingCode(
-  sessionId: string,
-  deviceId: string,
+  token: string,
+  ip?: string,
 ): Promise<{ pairingCode: string; pairingExpiresAt: string }> {
+  const cred = await authorizeCredential(token);
+  enforceRotateRateLimit(ip ?? "unknown", cred.sessionId);
   if (isDurableSessionBackend()) {
-    return rotatePairingCodeDurable(requireAdminClient(), sessionId, deviceId);
+    return rotatePairingCodeDurable(requireAdminClient(), token);
   }
-  return rotatePairingCodeMemory(sessionId, deviceId);
+  return rotatePairingCodeMemory(token);
 }
 
 export async function authorizeCredential(token: string) {
@@ -149,7 +162,6 @@ export function subscribeSession(
   listener: (message: SessionMessage) => void,
 ): () => void {
   if (isDurableSessionBackend()) {
-    // Cross-instance fanout uses snapshot polling; SSE listeners are single-process only.
     return () => undefined;
   }
   return subscribeSessionMemory(sessionId, listener);

@@ -82,8 +82,6 @@ export const sessionSnapshotSchema = z.object({
   devices: z.array(sessionDeviceSchema),
   playback: playbackStateSchema,
   preset: activePresetSnapshotSchema,
-  pairingCode: pairingCodeSchema.nullable().optional(),
-  pairingExpiresAt: z.string().nullable().optional(),
 });
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
@@ -202,6 +200,24 @@ export const guestCredentialSchema = z.object({
   expiresAt: z.string().min(1),
 });
 export type GuestCredential = z.infer<typeof guestCredentialSchema>;
+
+/** Browser-visible session identity. Never includes the raw credential. */
+export const publicGuestIdentitySchema = z.object({
+  sessionId: z.string().uuid(),
+  deviceId: z.string().min(1),
+  role: deviceRoleSchema,
+  expiresAt: z.string().min(1),
+});
+export type PublicGuestIdentity = z.infer<typeof publicGuestIdentitySchema>;
+
+/** Non-sensitive metadata allowed in sessionStorage (never credentials or pairing codes). */
+export const sessionClientMetaSchema = z.object({
+  sessionId: z.string().uuid(),
+  deviceId: z.string().min(1),
+  role: deviceRoleSchema,
+  intendedRoute: z.enum(["controller", "display", "combined"]).optional(),
+});
+export type SessionClientMeta = z.infer<typeof sessionClientMetaSchema>;
 
 /** Wire allowlist reminder — never transmit raw audio, mic buffers, FFT arrays, or images. */
 export const FORBIDDEN_SESSION_PAYLOAD_KEYS = [

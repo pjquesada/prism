@@ -1,12 +1,19 @@
 import { SessionServiceError, handoffController } from "@/lib/session/session-service";
-import { getGuestTokenFromRequest, handoffBodySchema, jsonError } from "@/lib/session/api-helpers";
+import {
+  assertMutatingSameOrigin,
+  getGuestTokenFromRequest,
+  handoffBodySchema,
+  jsonError,
+  sessionIdParamSchema,
+} from "@/lib/session/api-helpers";
 
 type RouteContext = { params: Promise<{ sessionId: string }> };
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const { sessionId } = await context.params;
-    const token = getGuestTokenFromRequest(request);
+    assertMutatingSameOrigin(request);
+    const sessionId = sessionIdParamSchema.parse((await context.params).sessionId);
+    const token = getGuestTokenFromRequest(request, sessionId);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const body = handoffBodySchema.parse(await request.json());
     const snapshot = await handoffController(token, body.targetDeviceId);

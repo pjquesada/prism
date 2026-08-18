@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
-import { stashCredentialHandoff, useSessionClient } from "@/lib/session/use-session-client";
+import { stashSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
 
 function subscribeNoop(): () => void {
   return () => undefined;
@@ -29,7 +29,12 @@ export function JoinSessionPanel() {
     setError(null);
     try {
       const joined = await client.join({ code, role: "display" });
-      stashCredentialHandoff(joined.credential);
+      stashSessionMeta({
+        sessionId: joined.credential.sessionId,
+        deviceId: joined.credential.deviceId,
+        role: joined.credential.role,
+        intendedRoute: "display",
+      });
       router.replace(`/display/${joined.credential.sessionId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "join_failed";

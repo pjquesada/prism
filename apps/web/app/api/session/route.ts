@@ -2,8 +2,10 @@ import {
   SessionServiceError,
   createGuestSession,
   resolveSessionTransport,
+  toPublicIdentity,
 } from "@/lib/session/session-service";
 import {
+  assertMutatingSameOrigin,
   createSessionBodySchema,
   jsonError,
   jsonWithGuestCredential,
@@ -12,6 +14,7 @@ import { buildJoinUrl } from "@/lib/session/config";
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    assertMutatingSameOrigin(request);
     const body = createSessionBodySchema.parse(await request.json().catch(() => ({})));
     const created = await createGuestSession({
       role: body.role,
@@ -22,7 +25,7 @@ export async function POST(request: Request): Promise<Response> {
       {
         sessionId: created.snapshot.session.id,
         snapshot: created.snapshot,
-        credential: created.credential,
+        credential: toPublicIdentity(created.credential),
         pairingCode: created.pairingCode,
         pairingExpiresAt: created.pairingExpiresAt,
         joinUrl: buildJoinUrl(created.pairingCode),
