@@ -3,24 +3,34 @@ import {
   authorizeCredential,
   getSnapshotForCredential,
   subscribeSession,
-} from "@/lib/session/memory-store";
-import { getBearerToken, jsonError } from "@/lib/session/api-helpers";
+} from "@/lib/session/session-service";
+import { getGuestTokenFromRequest, jsonError } from "@/lib/session/api-helpers";
+import { isDurableSessionBackend } from "@/lib/session/config";
 
 type RouteContext = { params: Promise<{ sessionId: string }> };
 
 /**
- * Memory-transport realtime: Server-Sent Events fanout for local/dev/CI
- * when Supabase Realtime is not configured.
+ * Memory-transport realtime: Server-Sent Events fanout for local/dev/CI.
+ * Durable Supabase sessions rely on snapshot polling (cross-instance safe).
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
     const { sessionId } = await context.params;
     const url = new URL(request.url);
-    const token = getBearerToken(request) ?? url.searchParams.get("token");
+    const token = getGuestTokenFromRequest(request) ?? url.searchParams.get("token");
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
-    const cred = authorizeCredential(token);
+    const cred = await authorizeCredential(token);
     if (cred.sessionId !== sessionId) {
       return jsonError("unauthorized", "Unauthorized.", 401);
+    }
+
+    if (isDurableSessionBackend()) {
+      const snapshot = await getSnapshotForCredential(token);
+      return Response.json({
+        snapshot,
+        transport: "supabase",
+        hint: "Use snapshot polling; SSE fanout is memory-only.",
+      });
     }
 
     const encoder = new TextEncoder();
@@ -33,20 +43,20 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         };
 
-        try {
-          const snapshot = getSnapshotForCredential(token);
-          send("snapshot", {
-            type: "session.snapshot",
-            seq: snapshot.session.seq,
-            sentAt: new Date().toISOString(),
-            sessionId,
-            deviceId: cred.deviceId,
-            payload: snapshot,
+        void getSnapshotForCredential(token)
+          .then((snapshot) => {
+            send("snapshot", {
+              type: "session.snapshot",
+              seq: snapshot.session.seq,
+              sentAt: new Date().toISOString(),
+              sessionId,
+              deviceId: cred.deviceId,
+              payload: snapshot,
+            });
+          })
+          .catch(() => {
+            controller.close();
           });
-        } catch {
-          controller.close();
-          return;
-        }
 
         unsubscribe = subscribeSession(sessionId, (message) => {
           send("message", message);

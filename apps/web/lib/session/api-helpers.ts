@@ -3,6 +3,8 @@ import { z } from "zod";
 import { deviceRoleSchema, displayModeSchema, sessionMessageSchema } from "@prism/contracts";
 import { containsForbiddenPayloadKeys, normalizePairingCodeInput } from "@prism/sync-engine";
 
+export const GUEST_CREDENTIAL_COOKIE = "prism_guest_cred";
+
 export const createSessionBodySchema = z.object({
   role: deviceRoleSchema.default("combined"),
   displayMode: displayModeSchema.default("mirror"),
@@ -45,6 +47,63 @@ export function getBearerToken(request: Request): string | null {
   const [scheme, token] = header.split(" ");
   if (scheme?.toLowerCase() !== "bearer" || !token) return null;
   return token;
+}
+
+function getCookie(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [rawKey, ...rest] = part.trim().split("=");
+    if (rawKey === name) {
+      return decodeURIComponent(rest.join("="));
+    }
+  }
+  return null;
+}
+
+/** Bearer token wins; HttpOnly cookie is the private-Safari / storage-blocked fallback. */
+export function getGuestTokenFromRequest(request: Request): string | null {
+  return getBearerToken(request) ?? getCookie(request, GUEST_CREDENTIAL_COOKIE);
+}
+
+export function guestCredentialSetCookieHeader(token: string, expiresAt: string): string {
+  const maxAge = Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000));
+  const secure =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") === true;
+  const parts = [
+    `${GUEST_CREDENTIAL_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAge}`,
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function guestCredentialClearCookieHeader(): string {
+  const secure =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") === true;
+  const parts = [`${GUEST_CREDENTIAL_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function jsonWithGuestCredential(
+  body: unknown,
+  credential: { token: string; expiresAt: string },
+  init?: { status?: number },
+): Response {
+  const response = Response.json(body, { status: init?.status });
+  response.headers.append(
+    "Set-Cookie",
+    guestCredentialSetCookieHeader(credential.token, credential.expiresAt),
+  );
+  return response;
 }
 
 export function getClientIp(request: Request): string {

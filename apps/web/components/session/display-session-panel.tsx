@@ -2,43 +2,66 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GuestCredential } from "@prism/contracts";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { SessionVisualizerStage } from "@/components/session/session-visualizer-stage";
-import { loadStoredCredential, useSessionClient } from "@/lib/session/use-session-client";
-
-function subscribeNoop(): () => void {
-  return () => undefined;
-}
-
-function readCredentialJson(sessionId: string): string | null {
-  const cred = loadStoredCredential();
-  if (!cred || cred.sessionId !== sessionId) return null;
-  return JSON.stringify(cred);
-}
+import { takeCredentialForSession, useSessionClient } from "@/lib/session/use-session-client";
 
 export function DisplaySessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
-  const credentialJson = useSyncExternalStore(
-    subscribeNoop,
-    () => readCredentialJson(sessionId),
-    () => null,
-  );
-  const credential = credentialJson ? (JSON.parse(credentialJson) as GuestCredential) : null;
+  const [credential, setCredential] = useState<GuestCredential | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [readyToRender, setReadyToRender] = useState(false);
+  const attemptedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!credential) return;
-    void client.restore(credential).catch((err) => {
+    if (!sessionId) return;
+    if (attemptedSessionRef.current === sessionId) return;
+    attemptedSessionRef.current = sessionId;
+
+    const existing = takeCredentialForSession(sessionId);
+    setCredential(existing);
+    setReadyToRender(true);
+
+    const run = existing
+      ? client.restore(existing)
+      : client.restoreWithCookie(sessionId).then(() => {
+          const fromState = client.getState();
+          if (fromState.localDeviceId && fromState.localRole) {
+            setCredential({
+              token: "",
+              sessionId,
+              deviceId: fromState.localDeviceId,
+              role: fromState.localRole,
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            });
+          }
+        });
+
+    void run.catch((err) => {
       setRestoreError(err instanceof Error ? err.message : "restore_failed");
     });
-  }, [client, credential]);
+  }, [client, sessionId]);
 
-  if (!credential || restoreError === "unauthorized" || sync.connection === "unauthorized") {
+  if (!readyToRender) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6">
+        <p className="text-prism-mist" role="status">
+          Connecting…
+        </p>
+      </div>
+    );
+  }
+
+  if (
+    restoreError === "unauthorized" ||
+    sync.connection === "unauthorized" ||
+    (restoreError && !credential && sync.connection !== "connecting")
+  ) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6">
         <p className="text-prism-ember" role="alert">
@@ -64,6 +87,19 @@ export function DisplaySessionPanel() {
     );
   }
 
+  if ((sync.connection === "offline" || restoreError === "restore_timeout") && !sync.snapshot) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6">
+        <p className="text-prism-ember" role="alert" data-testid="display-restore-timeout">
+          Could not load the session snapshot. Check your connection and try joining again.
+        </p>
+        <Link href="/join" className="prism-btn prism-btn-primary">
+          Join session
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <main className="prism-shell min-h-dvh">
       <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-4 sm:px-6">
@@ -74,7 +110,7 @@ export function DisplaySessionPanel() {
           </p>
         </header>
         <ConnectionBanner status={sync.connection} />
-        {restoreError && restoreError !== "unauthorized" ? (
+        {restoreError && restoreError !== "unauthorized" && restoreError !== "restore_timeout" ? (
           <p className="mb-3 text-sm text-prism-ember" role="alert">
             Could not restore session ({restoreError}).
           </p>

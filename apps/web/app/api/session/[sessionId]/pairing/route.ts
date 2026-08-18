@@ -1,5 +1,5 @@
-import { SessionServiceError, rotatePairingCode } from "@/lib/session/memory-store";
-import { getBearerToken, jsonError } from "@/lib/session/api-helpers";
+import { SessionServiceError, rotatePairingCode } from "@/lib/session/session-service";
+import { getGuestTokenFromRequest, jsonError } from "@/lib/session/api-helpers";
 import { buildJoinUrl } from "@/lib/session/config";
 
 type RouteContext = { params: Promise<{ sessionId: string }> };
@@ -7,13 +7,13 @@ type RouteContext = { params: Promise<{ sessionId: string }> };
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
     const { sessionId } = await context.params;
-    const token = getBearerToken(request);
+    const token = getGuestTokenFromRequest(request);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const deviceId = token.split(".")[1];
     if (!deviceId || !token.startsWith(`${sessionId}.`)) {
       return jsonError("unauthorized", "Unauthorized.", 401);
     }
-    const rotated = rotatePairingCode(sessionId, deviceId);
+    const rotated = await rotatePairingCode(sessionId, deviceId);
     return Response.json({
       pairingCode: rotated.pairingCode,
       pairingExpiresAt: rotated.pairingExpiresAt,
