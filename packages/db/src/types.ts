@@ -81,24 +81,22 @@ export type Database = {
           id: string;
           session_id: string;
           code_hash: string;
-          code_hint: string;
-          code: string | null;
           attempts: number;
           max_attempts: number;
           expires_at: string;
           consumed_at: string | null;
+          revoked_at: string | null;
           created_at: string;
         },
         {
           id?: string;
           session_id: string;
           code_hash: string;
-          code_hint: string;
-          code?: string | null;
           attempts?: number;
           max_attempts?: number;
           expires_at: string;
           consumed_at?: string | null;
+          revoked_at?: string | null;
           created_at?: string;
         }
       >;
@@ -109,6 +107,7 @@ export type Database = {
           secret_hash: string;
           role: "controller" | "display" | "combined";
           expires_at: string;
+          revoked_at: string | null;
           created_at: string;
         },
         {
@@ -117,6 +116,7 @@ export type Database = {
           secret_hash: string;
           role: "controller" | "display" | "combined";
           expires_at: string;
+          revoked_at?: string | null;
           created_at?: string;
         }
       >;

@@ -4,14 +4,19 @@ import {
   getSnapshotForCredential,
   heartbeat,
 } from "@/lib/session/session-service";
-import { getGuestTokenFromRequest, jsonError } from "@/lib/session/api-helpers";
+import {
+  assertMutatingSameOrigin,
+  getGuestTokenFromRequest,
+  jsonError,
+  sessionIdParamSchema,
+} from "@/lib/session/api-helpers";
 
 type RouteContext = { params: Promise<{ sessionId: string }> };
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const { sessionId } = await context.params;
-    const token = getGuestTokenFromRequest(request);
+    const sessionId = sessionIdParamSchema.parse((await context.params).sessionId);
+    const token = getGuestTokenFromRequest(request, sessionId);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const cred = await authorizeCredential(token);
     if (cred.sessionId !== sessionId) {
@@ -37,8 +42,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const { sessionId } = await context.params;
-    const token = getGuestTokenFromRequest(request);
+    assertMutatingSameOrigin(request);
+    const sessionId = sessionIdParamSchema.parse((await context.params).sessionId);
+    const token = getGuestTokenFromRequest(request, sessionId);
     if (!token) return jsonError("unauthorized", "Unauthorized.", 401);
     const snapshot = await heartbeat(token);
     if (snapshot.session.id !== sessionId) {

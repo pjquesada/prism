@@ -4,6 +4,8 @@ import {
   FORBIDDEN_SESSION_PAYLOAD_KEYS,
   PAIRING_CODE_LENGTH,
   pairingCodeSchema,
+  publicGuestIdentitySchema,
+  sessionClientMetaSchema,
   sessionMessageSchema,
   sessionSnapshotSchema,
 } from "./session.js";
@@ -71,6 +73,24 @@ describe("session contracts", () => {
       },
     });
     expect(snap.session.status).toBe("active");
+    expect(snap).not.toHaveProperty("pairingCode");
+  });
+
+  it("keeps public identity and sessionStorage meta free of credentials", () => {
+    const identity = publicGuestIdentitySchema.parse({
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      deviceId: "dev_a",
+      role: "display",
+      expiresAt: new Date().toISOString(),
+    });
+    expect(identity).not.toHaveProperty("token");
+    const meta = sessionClientMetaSchema.parse({
+      sessionId: identity.sessionId,
+      deviceId: identity.deviceId,
+      role: identity.role,
+      intendedRoute: "display",
+    });
+    expect(JSON.stringify(meta)).not.toMatch(/token|secret/);
   });
 
   it("documents forbidden payload keys", () => {

@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   defaultParamsForVisualizer,
   type DisplayMode,
-  type GuestCredential,
   type PlaybackState,
   type VisualizerId,
 } from "@prism/contracts";
@@ -14,11 +13,7 @@ import {
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
 import { SessionVisualizerStage } from "@/components/session/session-visualizer-stage";
-import {
-  storeCredential,
-  takeCredentialForSession,
-  useSessionClient,
-} from "@/lib/session/use-session-client";
+import { takeSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
 
 const VISUALIZERS: { id: VisualizerId; label: string }[] = [
   { id: "spectrum", label: "Spectrum" },
@@ -30,44 +25,35 @@ export function ControllerSessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
-  const [credential, setCredential] = useState<GuestCredential | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreStarted, setRestoreStarted] = useState(false);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [joinUrl, setJoinUrl] = useState<string | null>(null);
+  const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(false);
   const attemptedSessionRef = useRef<string | null>(null);
+
+  const restore = useCallback(() => {
+    if (!sessionId) return;
+    setRestoreError(null);
+    setRestoreStarted(true);
+    takeSessionMeta(sessionId);
+    void client.restoreWithCookie(sessionId).catch((err) => {
+      setRestoreError(err instanceof Error ? err.message : "restore_failed");
+    });
+  }, [client, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
     if (attemptedSessionRef.current === sessionId) return;
     attemptedSessionRef.current = sessionId;
-    setRestoreStarted(true);
+    restore();
+  }, [restore, sessionId]);
 
-    const existing = takeCredentialForSession(sessionId);
-    setCredential(existing);
-
-    const run = existing
-      ? client.restore(existing)
-      : client.restoreWithCookie(sessionId).then(() => {
-          const fromState = client.getState();
-          if (fromState.localDeviceId && fromState.localRole) {
-            setCredential({
-              token: "",
-              sessionId,
-              deviceId: fromState.localDeviceId,
-              role: fromState.localRole,
-              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-            });
-          }
-        });
-
-    void run.catch((err) => {
-      setRestoreError(err instanceof Error ? err.message : "restore_failed");
-    });
-  }, [client, sessionId]);
-
-  const joinUrl =
-    sync.snapshot?.pairingCode && typeof window !== "undefined"
-      ? `${window.location.origin}/join?code=${encodeURIComponent(sync.snapshot.pairingCode)}`
-      : null;
+  const retry = () => {
+    attemptedSessionRef.current = null;
+    restore();
+  };
 
   const publishVisual = useCallback(
     async (patch: {
@@ -104,8 +90,13 @@ export function ControllerSessionPanel() {
   );
 
   const isController = sync.localRole === "controller" || sync.localRole === "combined";
+  const restoreFailed =
+    Boolean(restoreError) ||
+    sync.connection === "error" ||
+    sync.connection === "offline" ||
+    sync.connection === "unauthorized";
 
-  if (!restoreStarted || (!credential && sync.connection === "connecting")) {
+  if (!restoreStarted || (sync.connection === "connecting" && !sync.snapshot && !restoreError)) {
     return (
       <div className="flex flex-col gap-4">
         <ConnectionBanner status={sync.connection === "idle" ? "connecting" : sync.connection} />
@@ -119,7 +110,7 @@ export function ControllerSessionPanel() {
   if (restoreError === "unauthorized" || sync.connection === "unauthorized") {
     return (
       <div className="flex flex-col gap-4">
-        <p className="text-prism-ember" role="alert">
+        <p className="text-prism-ember" role="alert" data-testid="restore-error">
           Unauthorized for this session. Start or join again.
         </p>
         <Link href="/start" className="prism-btn prism-btn-primary w-fit">
@@ -129,16 +120,21 @@ export function ControllerSessionPanel() {
     );
   }
 
-  if (
-    !credential &&
-    (restoreError || sync.connection === "offline" || sync.connection === "idle")
-  ) {
+  if (restoreFailed && !sync.snapshot) {
     return (
       <div className="flex flex-col gap-4">
-        <p className="text-prism-ember" role="alert">
-          Unauthorized for this session. Start or join again.
+        <p className="text-prism-ember" role="alert" data-testid="restore-error">
+          Could not restore the session. Check your connection and retry.
         </p>
-        <Link href="/start" className="prism-btn prism-btn-primary w-fit">
+        <button
+          type="button"
+          className="prism-btn prism-btn-primary w-fit"
+          data-testid="restore-retry"
+          onClick={retry}
+        >
+          Retry
+        </button>
+        <Link href="/start" className="prism-btn prism-btn-ghost w-fit">
           Start a session
         </Link>
       </div>
@@ -170,20 +166,51 @@ export function ControllerSessionPanel() {
             {sessionId}
           </p>
         </div>
-        {sync.snapshot?.pairingCode ? (
-          <div className="flex flex-wrap items-start gap-6">
+        <div className="flex flex-wrap items-start gap-6">
+          {pairingCode ? (
             <div>
               <p className="text-sm text-prism-mist">Code</p>
               <p
                 className="font-display text-3xl tracking-[0.18em]"
                 data-testid="controller-pairing-code"
               >
-                {sync.snapshot.pairingCode}
+                {pairingCode}
               </p>
+              {pairingExpiresAt ? (
+                <p className="mt-1 text-xs text-prism-mist">
+                  Expires {new Date(pairingExpiresAt).toLocaleTimeString()}
+                </p>
+              ) : null}
             </div>
-            {joinUrl ? <PairingQr joinUrl={joinUrl} label="Display QR" /> : null}
-          </div>
-        ) : null}
+          ) : (
+            <p className="max-w-xs text-sm text-prism-mist">
+              Pairing codes are shown once. Generate a new code to invite displays.
+            </p>
+          )}
+          {joinUrl ? <PairingQr joinUrl={joinUrl} label="Display QR" /> : null}
+          <button
+            type="button"
+            className="prism-btn prism-btn-ghost"
+            disabled={!isController || rotating}
+            data-testid="rotate-pairing-code"
+            onClick={() => {
+              setRotating(true);
+              void client
+                .rotatePairingCode()
+                .then((rotated) => {
+                  setPairingCode(rotated.pairingCode);
+                  setJoinUrl(rotated.joinUrl);
+                  setPairingExpiresAt(rotated.pairingExpiresAt);
+                })
+                .catch((err) => {
+                  setRestoreError(err instanceof Error ? err.message : "rotate_failed");
+                })
+                .finally(() => setRotating(false));
+            }}
+          >
+            {rotating ? "Generating…" : pairingCode ? "Rotate code" : "Generate pairing code"}
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3" role="group" aria-label="Visualizer">
@@ -256,7 +283,7 @@ export function ControllerSessionPanel() {
           className="prism-btn prism-btn-ghost"
           disabled={!isController}
           onClick={() => {
-            void client.end().then(() => storeCredential(null));
+            void client.end();
           }}
         >
           End session

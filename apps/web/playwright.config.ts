@@ -14,6 +14,13 @@ export default defineConfig({
     url: "http://127.0.0.1:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: {
+      ...process.env,
+      NEXT_PUBLIC_APP_URL: "http://127.0.0.1:3000",
+      PRISM_SESSION_BACKEND: "memory",
+      PRISM_ALLOW_MEMORY_SESSIONS: "true",
+      SESSION_SIGNING_SECRET: "playwright-session-signing-secret-min-32b",
+    },
   },
   projects: [
     {

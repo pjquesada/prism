@@ -10,6 +10,7 @@ const LABELS: Record<ConnectionStatus, string> = {
   offline: "Offline",
   unauthorized: "Unauthorized",
   ended: "Session ended",
+  error: "Could not restore session",
 };
 
 export function ConnectionBanner({ status }: { status: ConnectionStatus }) {

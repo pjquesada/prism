@@ -2,8 +2,10 @@ import {
   SessionServiceError,
   joinWithPairingCode,
   resolveSessionTransport,
+  toPublicIdentity,
 } from "@/lib/session/session-service";
 import {
+  assertMutatingSameOrigin,
   getClientIp,
   joinSessionBodySchema,
   jsonError,
@@ -13,6 +15,7 @@ import {
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    assertMutatingSameOrigin(request);
     const body = joinSessionBodySchema.parse(await request.json());
     const code = parseJoinCode(body.code);
     const joined = await joinWithPairingCode({
@@ -26,7 +29,7 @@ export async function POST(request: Request): Promise<Response> {
       {
         sessionId: joined.snapshot.session.id,
         snapshot: joined.snapshot,
-        credential: joined.credential,
+        credential: toPublicIdentity(joined.credential),
         transport: resolveSessionTransport(),
       },
       joined.credential,

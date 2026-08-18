@@ -6,7 +6,7 @@ import { useState } from "react";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
-import { stashCredentialHandoff, useSessionClient } from "@/lib/session/use-session-client";
+import { stashSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
 
 export function StartSessionPanel() {
   const router = useRouter();
@@ -25,7 +25,12 @@ export function StartSessionPanel() {
     setError(null);
     try {
       const created = await client.create({ role });
-      stashCredentialHandoff(created.credential);
+      stashSessionMeta({
+        sessionId: created.credential.sessionId,
+        deviceId: created.credential.deviceId,
+        role: created.credential.role,
+        intendedRoute: role,
+      });
       setPairingCode(created.pairingCode);
       setJoinUrl(created.joinUrl);
       setPairingExpiresAt(created.pairingExpiresAt);

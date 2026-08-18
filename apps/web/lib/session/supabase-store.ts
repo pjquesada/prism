@@ -1,24 +1,37 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
 
 import {
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
   defaultParamsForVisualizer,
+  deviceRoleSchema,
+  displayModeSchema,
+  publicGuestIdentitySchema,
+  sessionSnapshotSchema,
   type DeviceRole,
   type DisplayMode,
   type GuestCredential,
+  type PublicGuestIdentity,
   type SessionMessage,
   type SessionSnapshot,
 } from "@prism/contracts";
 import type { Json } from "@prism/db";
 import { generatePairingCode } from "@prism/sync-engine";
 
+import { getSessionSigningSecret } from "@/lib/session/config";
+import {
+  digestGuestCredential,
+  digestPairingCode,
+  generateGuestCredentialSecret,
+  normalizeAndValidatePairingCode,
+  timingSafeDigestEqual,
+} from "@/lib/session/crypto";
 import { SessionServiceError } from "@/lib/session/errors";
 
 /**
- * Loosely typed admin client surface. Supabase generated generics are brittle in this
- * monorepo's hand-written Database type; domain validation happens at the edges.
+ * Loosely typed admin client surface. Domain validation happens with Zod at the edges.
  */
 export type SessionAdminClient = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,85 +40,80 @@ export type SessionAdminClient = {
 
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
 
-type StoredCredential = GuestCredential & { secretHash: string };
+type StoredCredential = GuestCredential & { secretHmac: string };
 
-type GuestSessionRow = {
-  id: string;
-  host_device_id: string;
-  status: "active" | "ended";
-  display_mode: DisplayMode;
-  seq: number;
-  created_at: string;
-  updated_at: string;
-  expires_at: string;
-  closed_at: string | null;
-};
+const guestSessionRowSchema = z.object({
+  id: z.string().uuid(),
+  host_device_id: z.string().min(1),
+  status: z.enum(["active", "ended"]),
+  display_mode: displayModeSchema,
+  seq: z.coerce.number().int().nonnegative(),
+  created_at: z.string().min(1),
+  updated_at: z.string().min(1),
+  expires_at: z.string().min(1),
+  closed_at: z.string().nullable(),
+});
 
-type DeviceRow = {
-  id: string;
-  session_id: string;
-  device_id: string;
-  role: DeviceRole;
-  label: string | null;
-  display_mode: DisplayMode;
-  last_seen_at: string;
-  is_online: boolean;
-};
+const deviceRowSchema = z.object({
+  id: z.string().min(1),
+  session_id: z.string().uuid(),
+  device_id: z.string().min(1),
+  role: deviceRoleSchema,
+  label: z.string().nullable(),
+  display_mode: displayModeSchema,
+  last_seen_at: z.string().min(1),
+  is_online: z.boolean(),
+});
 
-type PlaybackRow = {
-  session_id: string;
-  audio_mode: string;
-  is_playing: boolean;
-  position_ms: number;
-  rate: number;
-  track_id: string;
-  seq: number;
-  updated_at: string;
-};
+const playbackRowSchema = z.object({
+  session_id: z.string().uuid(),
+  audio_mode: z.string().min(1),
+  is_playing: z.boolean(),
+  position_ms: z.number(),
+  rate: z.number(),
+  track_id: z.string().min(1),
+  seq: z.coerce.number().int().nonnegative(),
+  updated_at: z.string().min(1),
+});
 
-type PresetRow = {
-  session_id: string;
-  visualizer_id: string;
-  quality_tier: string;
-  preset_id: string | null;
-  params: Json;
-  seq: number;
-  updated_at: string;
-};
+const presetRowSchema = z.object({
+  session_id: z.string().uuid(),
+  visualizer_id: z.string().min(1),
+  quality_tier: z.string().min(1),
+  preset_id: z.string().nullable(),
+  params: z.unknown(),
+  seq: z.coerce.number().int().nonnegative(),
+  updated_at: z.string().min(1),
+});
 
-type PairingRow = {
-  id: string;
-  session_id: string;
-  code_hash: string;
-  code_hint: string;
-  code: string | null;
-  attempts: number;
-  max_attempts: number;
-  expires_at: string;
-  consumed_at: string | null;
-};
+const pairingRowSchema = z
+  .object({
+    id: z.string().min(1),
+    session_id: z.string().uuid(),
+    code_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    attempts: z.number().int().nonnegative(),
+    max_attempts: z.number().int().positive(),
+    expires_at: z.string().min(1),
+    consumed_at: z.string().nullable(),
+    revoked_at: z.string().nullable().optional(),
+    created_at: z.string().min(1).optional(),
+  })
+  .strict();
 
-type CredentialRow = {
-  session_id: string;
-  device_id: string;
-  secret_hash: string;
-  role: DeviceRole;
-  expires_at: string;
-};
+const credentialRowSchema = z
+  .object({
+    session_id: z.string().uuid(),
+    device_id: z.string().min(1),
+    secret_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    role: deviceRoleSchema,
+    expires_at: z.string().min(1),
+    revoked_at: z.string().nullable().optional(),
+    created_at: z.string().min(1).optional(),
+  })
+  .strict();
 
 function nowIso(ms = Date.now()): string {
   return new Date(ms).toISOString();
-}
-
-function hashValue(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function hashEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 function newId(): string {
@@ -116,8 +124,8 @@ function mintCredential(input: {
   sessionId: string;
   deviceId: string;
   role: DeviceRole;
-}): GuestCredential & { secret: string; secretHash: string } {
-  const secret = randomBytes(24).toString("base64url");
+}): GuestCredential & { secretHmac: string } {
+  const secret = generateGuestCredentialSecret();
   const expiresAt = nowIso(Date.now() + GUEST_CREDENTIAL_TTL_MS);
   return {
     token: `${input.sessionId}.${input.deviceId}.${secret}`,
@@ -125,19 +133,30 @@ function mintCredential(input: {
     deviceId: input.deviceId,
     role: input.role,
     expiresAt,
-    secret,
-    secretHash: hashValue(secret),
+    secretHmac: digestGuestCredential(secret, getSessionSigningSecret()),
   };
 }
 
-function publicCredential(cred: GuestCredential): GuestCredential {
-  return {
-    token: cred.token,
+export function publicIdentity(cred: GuestCredential): PublicGuestIdentity {
+  return publicGuestIdentitySchema.parse({
     sessionId: cred.sessionId,
     deviceId: cred.deviceId,
     role: cred.role,
     expiresAt: cred.expiresAt,
-  };
+  });
+}
+
+function asParams(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function throwIfError(error: { message: string } | null, fallback: string): void {
+  if (error) {
+    throw new SessionServiceError("backend_unavailable", error.message || fallback, 503);
+  }
 }
 
 function parseToken(token: string): { sessionId: string; deviceId: string; secret: string } {
@@ -152,23 +171,9 @@ function parseToken(token: string): { sessionId: string; deviceId: string; secre
   };
 }
 
-function asParams(value: Json): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function throwIfError(error: { message: string } | null, fallback: string): void {
-  if (error) {
-    throw new SessionServiceError("backend_unavailable", error.message || fallback, 503);
-  }
-}
-
 async function loadSnapshot(
   client: SessionAdminClient,
   sessionId: string,
-  options?: { includePairing?: boolean; allowEnded?: boolean },
 ): Promise<SessionSnapshot> {
   const { data: session, error: sessionError } = await client
     .from("guest_sessions")
@@ -179,41 +184,30 @@ async function loadSnapshot(
   if (!session) {
     throw new SessionServiceError("not_found", "Session not found.", 404);
   }
-  const row = session as GuestSessionRow;
+  const row = guestSessionRowSchema.parse(session);
   const expired = Date.parse(row.expires_at) < Date.now();
-  if (!options?.allowEnded && (row.status === "ended" || expired)) {
+  if (row.status === "ended" || expired) {
     throw new SessionServiceError("ended", "Session has ended.", 410);
   }
 
-  const [devicesRes, playbackRes, presetRes, pairingRes] = await Promise.all([
+  const [devicesRes, playbackRes, presetRes] = await Promise.all([
     client.from("session_devices").select("*").eq("session_id", sessionId),
     client.from("playback_state").select("*").eq("session_id", sessionId).maybeSingle(),
     client.from("active_preset_snapshots").select("*").eq("session_id", sessionId).maybeSingle(),
-    options?.includePairing
-      ? client
-          .from("pairing_codes")
-          .select("*")
-          .eq("session_id", sessionId)
-          .is("consumed_at", null)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
   ]);
 
   throwIfError(devicesRes.error, "Failed to load devices.");
   throwIfError(playbackRes.error, "Failed to load playback.");
   throwIfError(presetRes.error, "Failed to load preset.");
-  throwIfError(pairingRes.error, "Failed to load pairing.");
   if (!playbackRes.data || !presetRes.data) {
     throw new SessionServiceError("not_found", "Session snapshot incomplete.", 404);
   }
 
-  const playback = playbackRes.data as PlaybackRow;
-  const preset = presetRes.data as PresetRow;
-  const devices = (devicesRes.data ?? []) as DeviceRow[];
+  const playback = playbackRowSchema.parse(playbackRes.data);
+  const preset = presetRowSchema.parse(presetRes.data);
+  const devices = z.array(deviceRowSchema).parse(devicesRes.data ?? []);
 
-  const snapshot: SessionSnapshot = {
+  return sessionSnapshotSchema.parse({
     session: {
       id: row.id,
       hostDeviceId: row.host_device_id,
@@ -252,17 +246,7 @@ async function loadSnapshot(
       updatedAt: preset.updated_at,
       seq: Number(preset.seq),
     },
-  };
-
-  if (options?.includePairing && pairingRes.data) {
-    const pairing = pairingRes.data as PairingRow;
-    if (pairing.code && !pairing.consumed_at && Date.parse(pairing.expires_at) >= Date.now()) {
-      snapshot.pairingCode = pairing.code as SessionSnapshot["pairingCode"];
-      snapshot.pairingExpiresAt = pairing.expires_at;
-    }
-  }
-
-  return snapshot;
+  });
 }
 
 async function bumpSessionSeq(client: SessionAdminClient, sessionId: string): Promise<number> {
@@ -308,6 +292,7 @@ export async function createGuestSessionDurable(
   const pairingExpiresAt = nowIso(Date.now() + PAIRING_CODE_TTL_MS);
   const credential = mintCredential({ sessionId, deviceId: hostDeviceId, role });
   const spectrumParams = defaultParamsForVisualizer("spectrum");
+  const codeHmac = digestPairingCode(pairingCode, getSessionSigningSecret());
 
   const { error: sessionError } = await client.from("guest_sessions").insert({
     id: sessionId,
@@ -354,21 +339,21 @@ export async function createGuestSessionDurable(
     }),
     client.from("pairing_codes").insert({
       session_id: sessionId,
-      code_hash: hashValue(pairingCode),
-      code_hint: pairingCode.slice(0, 2),
-      code: pairingCode,
+      code_hash: codeHmac,
       attempts: 0,
       max_attempts: PAIRING_MAX_ATTEMPTS,
       expires_at: pairingExpiresAt,
       consumed_at: null,
+      revoked_at: null,
       created_at: createdAt,
     }),
     client.from("session_credentials").insert({
       session_id: sessionId,
       device_id: hostDeviceId,
-      secret_hash: credential.secretHash,
+      secret_hash: credential.secretHmac,
       role,
       expires_at: credential.expiresAt,
+      revoked_at: null,
       created_at: createdAt,
     }),
   ]);
@@ -380,10 +365,10 @@ export async function createGuestSessionDurable(
     throw new SessionServiceError("backend_unavailable", writeError.message, 503);
   }
 
-  const snapshot = await loadSnapshot(client, sessionId, { includePairing: true });
+  const snapshot = await loadSnapshot(client, sessionId);
   return {
     snapshot,
-    credential: publicCredential(credential),
+    credential,
     pairingCode,
     pairingExpiresAt,
   };
@@ -394,7 +379,7 @@ export async function authorizeCredentialDurable(
   token: string,
 ): Promise<StoredCredential> {
   const parsed = parseToken(token);
-  const secretHash = hashValue(parsed.secret);
+  const secretHmac = digestGuestCredential(parsed.secret, getSessionSigningSecret());
 
   const { data: cred, error } = await client
     .from("session_credentials")
@@ -403,11 +388,14 @@ export async function authorizeCredentialDurable(
     .eq("device_id", parsed.deviceId)
     .maybeSingle();
   throwIfError(error, "Failed to authorize credential.");
-  const credRow = cred as CredentialRow | null;
+  if (!cred) {
+    throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
+  }
+  const credRow = credentialRowSchema.parse(cred);
   if (
-    !credRow ||
-    !hashEqual(credRow.secret_hash, secretHash) ||
-    Date.parse(credRow.expires_at) < Date.now()
+    !timingSafeDigestEqual(credRow.secret_hash, secretHmac) ||
+    Date.parse(credRow.expires_at) < Date.now() ||
+    credRow.revoked_at
   ) {
     throw new SessionServiceError("unauthorized", "Unauthorized.", 401);
   }
@@ -432,7 +420,7 @@ export async function authorizeCredentialDurable(
     deviceId: parsed.deviceId,
     role: credRow.role,
     expiresAt: credRow.expires_at,
-    secretHash: credRow.secret_hash,
+    secretHmac: credRow.secret_hash,
   };
 }
 
@@ -441,8 +429,7 @@ export async function getSnapshotForCredentialDurable(
   token: string,
 ): Promise<SessionSnapshot> {
   const cred = await authorizeCredentialDurable(client, token);
-  const isController = cred.role === "controller" || cred.role === "combined";
-  return loadSnapshot(client, cred.sessionId, { includePairing: isController });
+  return loadSnapshot(client, cred.sessionId);
 }
 
 export async function heartbeatDurable(
@@ -469,38 +456,31 @@ export async function joinWithPairingCodeDurable(
     label?: string | null;
   },
 ): Promise<{ snapshot: SessionSnapshot; credential: GuestCredential }> {
-  const normalized = input.code.trim().toUpperCase();
-  const candidateHash = hashValue(normalized);
+  const normalized = normalizeAndValidatePairingCode(input.code);
+  if (!normalized) {
+    throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
+  }
+  const candidateHmac = digestPairingCode(normalized, getSessionSigningSecret());
 
   const { data: matched, error: pairingError } = await client
     .from("pairing_codes")
     .select("*")
-    .eq("code_hash", candidateHash)
+    .eq("code_hash", candidateHmac)
     .is("consumed_at", null)
+    .is("revoked_at", null)
     .gt("expires_at", nowIso())
     .maybeSingle();
   throwIfError(pairingError, "Failed to look up pairing code.");
 
-  const matchedRow = matched as PairingRow | null;
-  if (!matchedRow || matchedRow.attempts >= matchedRow.max_attempts) {
-    const { data: burn } = await client
-      .from("pairing_codes")
-      .select("id, attempts")
-      .is("consumed_at", null)
-      .gt("expires_at", nowIso())
-      .limit(1)
-      .maybeSingle();
-    if (burn) {
-      const burnRow = burn as { id: string; attempts: number };
-      await client
-        .from("pairing_codes")
-        .update({ attempts: burnRow.attempts + 1 })
-        .eq("id", burnRow.id);
-    }
+  if (!matched) {
     throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
   }
 
-  if (matchedRow.code && matchedRow.code !== normalized) {
+  const matchedRow = pairingRowSchema.parse(matched);
+  if (
+    !timingSafeDigestEqual(matchedRow.code_hash, candidateHmac) ||
+    matchedRow.attempts >= matchedRow.max_attempts
+  ) {
     throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
   }
 
@@ -516,12 +496,11 @@ export async function joinWithPairingCodeDurable(
     .eq("id", matchedRow.session_id)
     .maybeSingle();
   throwIfError(sessionError, "Failed to load session for join.");
-  const sessionRow = session as GuestSessionRow | null;
-  if (
-    !sessionRow ||
-    sessionRow.status !== "active" ||
-    Date.parse(sessionRow.expires_at) < Date.now()
-  ) {
+  if (!session) {
+    throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
+  }
+  const sessionRow = guestSessionRowSchema.parse(session);
+  if (sessionRow.status !== "active" || Date.parse(sessionRow.expires_at) < Date.now()) {
     throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
   }
 
@@ -535,7 +514,7 @@ export async function joinWithPairingCodeDurable(
     .eq("session_id", matchedRow.session_id)
     .eq("device_id", deviceId)
     .maybeSingle();
-  const existing = existingDevice as DeviceRow | null;
+  const existing = existingDevice ? deviceRowSchema.parse(existingDevice) : null;
 
   if (existing) {
     const { error } = await client
@@ -572,70 +551,45 @@ export async function joinWithPairingCodeDurable(
   const { error: credError } = await client.from("session_credentials").upsert({
     session_id: matchedRow.session_id,
     device_id: deviceId,
-    secret_hash: credential.secretHash,
+    secret_hash: credential.secretHmac,
     role,
     expires_at: credential.expiresAt,
+    revoked_at: null,
     created_at: now,
   });
   throwIfError(credError, "Failed to mint credential.");
 
   await bumpSessionSeq(client, matchedRow.session_id);
-  const snapshot = await loadSnapshot(client, matchedRow.session_id, { includePairing: false });
-  return {
-    snapshot,
-    credential: publicCredential(credential),
-  };
+  const snapshot = await loadSnapshot(client, matchedRow.session_id);
+  return { snapshot, credential };
 }
 
 export async function rotatePairingCodeDurable(
   client: SessionAdminClient,
-  sessionId: string,
-  deviceId: string,
+  token: string,
 ): Promise<{ pairingCode: string; pairingExpiresAt: string }> {
-  const { data: cred, error } = await client
-    .from("session_credentials")
-    .select("*")
-    .eq("session_id", sessionId)
-    .eq("device_id", deviceId)
-    .maybeSingle();
-  throwIfError(error, "Failed to authorize rotation.");
-  const credRow = cred as CredentialRow | null;
-  if (!credRow || (credRow.role !== "controller" && credRow.role !== "combined")) {
+  const cred = await authorizeCredentialDurable(client, token);
+  if (cred.role !== "controller" && cred.role !== "combined") {
     throw new SessionServiceError("unauthorized", "Only the controller can rotate codes.", 401);
-  }
-
-  const { data: session } = await client
-    .from("guest_sessions")
-    .select("status, expires_at")
-    .eq("id", sessionId)
-    .maybeSingle();
-  const sessionRow = session as { status: string; expires_at: string } | null;
-  if (
-    !sessionRow ||
-    sessionRow.status !== "active" ||
-    Date.parse(sessionRow.expires_at) < Date.now()
-  ) {
-    throw new SessionServiceError("ended", "Session has ended.", 410);
   }
 
   const now = nowIso();
   await client
     .from("pairing_codes")
-    .update({ consumed_at: now })
-    .eq("session_id", sessionId)
+    .update({ consumed_at: now, revoked_at: now })
+    .eq("session_id", cred.sessionId)
     .is("consumed_at", null);
 
   const pairingCode = generatePairingCode((size) => randomBytes(size));
   const pairingExpiresAt = nowIso(Date.now() + PAIRING_CODE_TTL_MS);
   const { error: insertError } = await client.from("pairing_codes").insert({
-    session_id: sessionId,
-    code_hash: hashValue(pairingCode),
-    code_hint: pairingCode.slice(0, 2),
-    code: pairingCode,
+    session_id: cred.sessionId,
+    code_hash: digestPairingCode(pairingCode, getSessionSigningSecret()),
     attempts: 0,
     max_attempts: PAIRING_MAX_ATTEMPTS,
     expires_at: pairingExpiresAt,
     consumed_at: null,
+    revoked_at: null,
     created_at: now,
   });
   throwIfError(insertError, "Failed to rotate pairing code.");
@@ -657,6 +611,16 @@ export async function endSessionDurable(client: SessionAdminClient, token: strin
     .from("session_devices")
     .update({ is_online: false })
     .eq("session_id", cred.sessionId);
+  await client
+    .from("pairing_codes")
+    .update({ consumed_at: now, revoked_at: now })
+    .eq("session_id", cred.sessionId)
+    .is("consumed_at", null);
+  await client
+    .from("session_credentials")
+    .update({ revoked_at: now })
+    .eq("session_id", cred.sessionId)
+    .is("revoked_at", null);
 }
 
 export async function handoffControllerDurable(
@@ -688,21 +652,24 @@ export async function handoffControllerDurable(
   throwIfError(devicesError, "Failed to load devices.");
 
   await Promise.all(
-    ((devices ?? []) as DeviceRow[]).map((device) => {
-      if (device.device_id === targetDeviceId) {
-        return client
-          .from("session_devices")
-          .update({ role: "controller", last_seen_at: now })
-          .eq("id", device.id);
-      }
-      if (device.role === "controller" || device.role === "combined") {
-        return client
-          .from("session_devices")
-          .update({ role: "display", last_seen_at: now })
-          .eq("id", device.id);
-      }
-      return Promise.resolve({ error: null });
-    }),
+    z
+      .array(deviceRowSchema)
+      .parse(devices ?? [])
+      .map((device) => {
+        if (device.device_id === targetDeviceId) {
+          return client
+            .from("session_devices")
+            .update({ role: "controller", last_seen_at: now })
+            .eq("id", device.id);
+        }
+        if (device.role === "controller" || device.role === "combined") {
+          return client
+            .from("session_devices")
+            .update({ role: "display", last_seen_at: now })
+            .eq("id", device.id);
+        }
+        return Promise.resolve({ error: null });
+      }),
   );
 
   await client

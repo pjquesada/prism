@@ -1,9 +1,10 @@
 import type {
   DeviceRole,
-  GuestCredential,
+  PublicGuestIdentity,
   SessionMessage,
   SessionSnapshot,
 } from "@prism/contracts";
+import { publicGuestIdentitySchema } from "@prism/contracts";
 import {
   HEARTBEAT_INTERVAL_MS,
   PING_INTERVAL_MS,
@@ -16,8 +17,6 @@ import {
   type SyncEngineState,
 } from "@prism/sync-engine";
 
-export type SessionTransportKind = "memory" | "supabase";
-
 const RESTORE_TIMEOUT_MS = 12_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 
@@ -25,14 +24,8 @@ type CreateHandlers = {
   onState: (state: SyncEngineState) => void;
 };
 
-function authHeaders(token: string | null | undefined): HeadersInit {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
+function jsonHeaders(): HeadersInit {
+  return { "Content-Type": "application/json" };
 }
 
 async function fetchWithTimeout(
@@ -56,14 +49,12 @@ async function fetchWithTimeout(
 export class SessionClient {
   private state: SyncEngineState;
   private readonly onState: (state: SyncEngineState) => void;
-  private eventSource: EventSource | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private connectWatchTimer: number | null = null;
   private disposed = false;
-  private credential: GuestCredential | null = null;
-  private transport: SessionTransportKind = "memory";
+  private identity: PublicGuestIdentity | null = null;
   private snapshotInFlight = false;
 
   constructor(handlers: CreateHandlers) {
@@ -79,12 +70,16 @@ export class SessionClient {
     return sessionNowMs(this.state.clock);
   }
 
+  getIdentity(): PublicGuestIdentity | null {
+    return this.identity;
+  }
+
   async create(input?: {
     role?: "controller" | "display" | "combined";
     displayMode?: "mirror" | "complementary";
   }): Promise<{
     snapshot: SessionSnapshot;
-    credential: GuestCredential;
+    credential: PublicGuestIdentity;
     pairingCode: string;
     pairingExpiresAt: string;
     joinUrl: string;
@@ -94,32 +89,30 @@ export class SessionClient {
       "/api/session",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders(),
         body: JSON.stringify(input ?? { role: "combined" }),
       },
       CONNECT_TIMEOUT_MS,
     );
     const data = await res.json();
     if (!res.ok) {
-      this.patchConnection(res.status === 401 ? "unauthorized" : "offline");
+      this.patchConnection(res.status === 401 ? "unauthorized" : "error");
       throw new Error(data?.error?.code ?? "create_failed");
     }
-    this.transport = data.transport === "supabase" ? "supabase" : "memory";
-    this.credential = data.credential;
+    this.identity = publicGuestIdentitySchema.parse(data.credential);
     this.state = setLocalIdentity(this.state, {
-      deviceId: data.credential.deviceId,
-      role: data.credential.role,
+      deviceId: this.identity.deviceId,
+      role: this.identity.role,
     });
     this.applyRaw({
       type: "session.snapshot",
       seq: data.snapshot.session.seq,
       sentAt: new Date().toISOString(),
       sessionId: data.snapshot.session.id,
-      deviceId: data.credential.deviceId,
+      deviceId: this.identity.deviceId,
       payload: data.snapshot,
     });
     this.patchConnection("connected");
-    this.connectEvents();
     this.startTimers();
     return data;
   }
@@ -128,13 +121,13 @@ export class SessionClient {
     code: string;
     role?: "controller" | "display" | "combined";
     deviceId?: string;
-  }): Promise<{ snapshot: SessionSnapshot; credential: GuestCredential }> {
+  }): Promise<{ snapshot: SessionSnapshot; credential: PublicGuestIdentity }> {
     this.patchConnection("connecting");
     const res = await fetchWithTimeout(
       "/api/session/join",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders(),
         body: JSON.stringify(input),
       },
       CONNECT_TIMEOUT_MS,
@@ -144,76 +137,41 @@ export class SessionClient {
       const code = data?.error?.code as string | undefined;
       if (code === "invalid_or_expired") this.patchConnection("idle");
       else if (code === "unauthorized") this.patchConnection("unauthorized");
-      else this.patchConnection("offline");
+      else this.patchConnection("error");
       throw new Error(code ?? "join_failed");
     }
-    this.transport = data.transport === "supabase" ? "supabase" : "memory";
-    this.credential = data.credential;
+    this.identity = publicGuestIdentitySchema.parse(data.credential);
     this.state = setLocalIdentity(this.state, {
-      deviceId: data.credential.deviceId,
-      role: data.credential.role,
+      deviceId: this.identity.deviceId,
+      role: this.identity.role,
     });
     this.applyRaw({
       type: "session.snapshot",
       seq: data.snapshot.session.seq,
       sentAt: new Date().toISOString(),
       sessionId: data.snapshot.session.id,
-      deviceId: data.credential.deviceId,
+      deviceId: this.identity.deviceId,
       payload: data.snapshot,
     });
     this.patchConnection("connected");
-    this.connectEvents();
     this.startTimers();
     return data;
   }
 
-  async restore(credential: GuestCredential): Promise<void> {
-    this.credential = credential;
-    this.state = setLocalIdentity(this.state, {
-      deviceId: credential.deviceId,
-      role: credential.role,
-    });
-    this.patchConnection("connecting");
-    this.armConnectWatch();
-    try {
-      const res = await fetchWithTimeout(
-        `/api/session/${credential.sessionId}`,
-        { headers: authHeaders(credential.token) },
-        RESTORE_TIMEOUT_MS,
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        this.patchConnection(res.status === 410 ? "ended" : "unauthorized");
-        throw new Error(data?.error?.code ?? "restore_failed");
-      }
-      this.applySnapshotPayload(data.snapshot, credential.deviceId);
-      this.patchConnection("connected");
-      this.connectEvents();
-      this.startTimers();
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        this.patchConnection("offline");
-        throw new Error("restore_timeout");
-      }
-      throw error;
-    } finally {
-      this.clearConnectWatch();
-    }
-  }
-
-  /** Cookie-only restore when localStorage/sessionStorage handoff is missing. */
+  /** Restore from the session-scoped HttpOnly cookie. No pairing code, no localStorage. */
   async restoreWithCookie(sessionId: string): Promise<void> {
     this.patchConnection("connecting");
     this.armConnectWatch();
     try {
       const res = await fetchWithTimeout(
         `/api/session/${sessionId}`,
-        { headers: { "Content-Type": "application/json" } },
+        { headers: jsonHeaders() },
         RESTORE_TIMEOUT_MS,
       );
       const data = await res.json();
       if (!res.ok) {
-        this.patchConnection(res.status === 410 ? "ended" : "unauthorized");
+        const status = res.status === 410 ? "ended" : res.status === 401 ? "unauthorized" : "error";
+        this.patchConnection(status);
         throw new Error(data?.error?.code ?? "restore_failed");
       }
       const deviceId = data?.device?.deviceId as string | undefined;
@@ -227,8 +185,7 @@ export class SessionClient {
           (d: { deviceId: string; role: DeviceRole }) => d.deviceId === deviceId,
         )?.role as DeviceRole | undefined) ??
         "display";
-      this.credential = {
-        token: "",
+      this.identity = {
         sessionId,
         deviceId,
         role,
@@ -239,12 +196,14 @@ export class SessionClient {
       this.state = setLocalIdentity(this.state, { deviceId, role });
       this.applySnapshotPayload(data.snapshot, deviceId);
       this.patchConnection("connected");
-      this.connectEvents();
       this.startTimers();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        this.patchConnection("offline");
+        this.patchConnection("error");
         throw new Error("restore_timeout");
+      }
+      if (this.state.connection === "connecting") {
+        this.patchConnection("error");
       }
       throw error;
     } finally {
@@ -252,10 +211,28 @@ export class SessionClient {
     }
   }
 
+  async rotatePairingCode(): Promise<{
+    pairingCode: string;
+    pairingExpiresAt: string;
+    joinUrl: string;
+  }> {
+    if (!this.identity) throw new Error("unauthorized");
+    const res = await fetchWithTimeout(
+      `/api/session/${this.identity.sessionId}/pairing`,
+      { method: "POST", headers: jsonHeaders() },
+      CONNECT_TIMEOUT_MS,
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error?.code ?? "rotate_failed");
+    }
+    return data;
+  }
+
   async publish(
     message: Omit<SessionMessage, "seq" | "sentAt"> & { seq?: number; sentAt?: string },
   ): Promise<void> {
-    if (!this.credential) throw new Error("unauthorized");
+    if (!this.identity) throw new Error("unauthorized");
     const body = {
       message: {
         ...message,
@@ -263,10 +240,10 @@ export class SessionClient {
         sentAt: message.sentAt ?? new Date().toISOString(),
       },
     };
-    const res = await fetch(`/api/session/${this.credential.sessionId}/broadcast`, {
+    const res = await fetch(`/api/session/${this.identity.sessionId}/broadcast`, {
       method: "POST",
       credentials: "same-origin",
-      headers: authHeaders(this.credential.token || null),
+      headers: jsonHeaders(),
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
@@ -279,22 +256,22 @@ export class SessionClient {
   }
 
   async end(): Promise<void> {
-    if (!this.credential) return;
-    await fetch(`/api/session/${this.credential.sessionId}/end`, {
+    if (!this.identity) return;
+    await fetch(`/api/session/${this.identity.sessionId}/end`, {
       method: "POST",
       credentials: "same-origin",
-      headers: authHeaders(this.credential.token || null),
+      headers: jsonHeaders(),
     });
     this.patchConnection("ended");
     this.dispose();
   }
 
   async handoff(targetDeviceId: string): Promise<void> {
-    if (!this.credential) throw new Error("unauthorized");
-    const res = await fetch(`/api/session/${this.credential.sessionId}/handoff`, {
+    if (!this.identity) throw new Error("unauthorized");
+    const res = await fetch(`/api/session/${this.identity.sessionId}/handoff`, {
       method: "POST",
       credentials: "same-origin",
-      headers: authHeaders(this.credential.token || null),
+      headers: jsonHeaders(),
       body: JSON.stringify({ targetDeviceId }),
     });
     if (!res.ok) {
@@ -306,10 +283,6 @@ export class SessionClient {
   dispose(): void {
     this.disposed = true;
     this.clearConnectWatch();
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
@@ -326,24 +299,17 @@ export class SessionClient {
     });
   }
 
-  private connectEvents(): void {
-    if (!this.credential || this.disposed) return;
-    // Both memory and durable supabase transports use HTTP snapshot polling.
-    // SSE fanout is single-process only and unsafe across Vercel isolates.
-    return;
-  }
-
   private async requestSnapshot(): Promise<void> {
-    if (!this.credential || this.snapshotInFlight) return;
+    if (!this.identity || this.snapshotInFlight) return;
     this.snapshotInFlight = true;
     try {
-      const res = await fetch(`/api/session/${this.credential.sessionId}`, {
+      const res = await fetch(`/api/session/${this.identity.sessionId}`, {
         credentials: "same-origin",
-        headers: authHeaders(this.credential.token || null),
+        headers: jsonHeaders(),
       });
       if (!res.ok) return;
       const data = await res.json();
-      this.applySnapshotPayload(data.snapshot, this.credential.deviceId);
+      this.applySnapshotPayload(data.snapshot, this.identity.deviceId);
       this.patchConnection("connected");
     } catch {
       this.patchConnection("offline");
@@ -353,7 +319,7 @@ export class SessionClient {
   }
 
   private startTimers(): void {
-    if (!this.credential) return;
+    if (!this.identity) return;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
@@ -363,11 +329,11 @@ export class SessionClient {
     }, 1_000);
 
     this.heartbeatTimer = setInterval(() => {
-      if (!this.credential) return;
-      void fetch(`/api/session/${this.credential.sessionId}`, {
+      if (!this.identity) return;
+      void fetch(`/api/session/${this.identity.sessionId}`, {
         method: "POST",
         credentials: "same-origin",
-        headers: authHeaders(this.credential.token || null),
+        headers: jsonHeaders(),
       })
         .then(async (res) => {
           if (res.status === 410) {
@@ -380,7 +346,7 @@ export class SessionClient {
           }
           const data = await res.json();
           if (data?.snapshot) {
-            this.applySnapshotPayload(data.snapshot, this.credential!.deviceId);
+            this.applySnapshotPayload(data.snapshot, this.identity!.deviceId);
             this.patchConnection("connected");
           }
         })
@@ -390,12 +356,12 @@ export class SessionClient {
     }, HEARTBEAT_INTERVAL_MS);
 
     this.pingTimer = setInterval(() => {
-      if (!this.credential || !this.state.snapshot) return;
+      if (!this.identity || !this.state.snapshot) return;
       const clientSentAtMs = Date.now();
       void this.publish({
         type: "ping",
-        sessionId: this.credential.sessionId,
-        deviceId: this.credential.deviceId,
+        sessionId: this.identity.sessionId,
+        deviceId: this.identity.deviceId,
         payload: { clientSentAtMs },
       }).catch(() => {
         // ignore
@@ -420,7 +386,7 @@ export class SessionClient {
     this.connectWatchTimer = window.setTimeout(() => {
       if (this.disposed) return;
       if (this.state.connection === "connecting" && !this.state.snapshot) {
-        this.patchConnection("offline");
+        this.patchConnection("error");
       }
     }, CONNECT_TIMEOUT_MS);
   }

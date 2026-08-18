@@ -58,7 +58,7 @@ docs/                    Architecture and phase notes
 
 ## Environment
 
-Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + visualizers do not require API keys. Session pairing works with the in-memory backend when Supabase is unset. Never put secrets in `NEXT_PUBLIC_*`.
+Copy `.env.example` to `apps/web/.env.local` when you need local values. Demo Track + visualizers do not require API keys. Guest pairing requires `SESSION_SIGNING_SECRET`. Production also requires Supabase service-role credentials and does not fall back to in-memory sessions. For local/CI memory sessions set `PRISM_SESSION_BACKEND=memory`. Never put secrets in `NEXT_PUBLIC_*`.
 
 ## Spec
 

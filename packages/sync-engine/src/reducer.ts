@@ -11,7 +11,14 @@ import { createClockEstimate, type ClockEstimate } from "./clock.js";
 import { createSeqState, decideSeq, type SeqState } from "./seq.js";
 
 export type ConnectionStatus =
-  "idle" | "connecting" | "connected" | "reconnecting" | "offline" | "unauthorized" | "ended";
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "unauthorized"
+  | "ended"
+  | "error";
 
 export type SyncEngineState = {
   snapshot: SessionSnapshot | null;
