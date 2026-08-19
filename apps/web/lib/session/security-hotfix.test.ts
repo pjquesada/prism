@@ -49,6 +49,7 @@ describe("security hotfix migration and source scan", () => {
     expect(files).toContain("20260815000000_phase1d_sessions.sql");
     expect(files).toContain("20260816000000_phase1d_session_credentials.sql");
     expect(files).toContain("20260818120000_phase1d_security_hotfix.sql");
+    expect(files).toContain("20260819043000_phase1d_pairing_schema_cache.sql");
 
     const original = readFileSync(
       join(migrationsDir, "20260815000000_phase1d_sessions.sql"),
@@ -65,6 +66,10 @@ describe("security hotfix migration and source scan", () => {
       join(migrationsDir, "20260818120000_phase1d_security_hotfix.sql"),
       "utf8",
     );
+    const cacheReload = readFileSync(
+      join(migrationsDir, "20260819043000_phase1d_pairing_schema_cache.sql"),
+      "utf8",
+    );
     expect(hotfix).toMatch(/delete from public\.pairing_codes/i);
     expect(hotfix).toMatch(/delete from public\.session_credentials/i);
     expect(hotfix).toMatch(/delete from public\.playback_state/i);
@@ -78,6 +83,10 @@ describe("security hotfix migration and source scan", () => {
     expect(hotfix).toMatch(/intentionally wiped/i);
     expect(hotfix).not.toMatch(/digest\(/i);
     expect(hotfix).not.toMatch(/encode\(digest/i);
+    expect(cacheReload).toMatch(/notify pgrst, 'reload schema'/i);
+    expect(cacheReload).toMatch(/drop column if exists code_hint/i);
+    expect(cacheReload).toMatch(/pairing_codes_active_hmac_uidx/);
+    expect(cacheReload).not.toMatch(/delete from public\.guest_sessions/i);
   });
 
   it("does not keep plaintext pairing or credential columns in generated Database types", () => {

@@ -1,11 +1,14 @@
 import {
+  getSessionConfigurationPresence,
   getSessionTransport,
   isFailClosedProduction,
   listSessionConfigIssues,
   resolveSessionTransport,
   type SessionConfigIssue,
+  type SessionConfigurationPresence,
   type SessionTransportKind,
 } from "@/lib/session/config";
+import { classifySupabaseFailure } from "@/lib/session/db-error";
 import { SessionServiceError } from "@/lib/session/errors";
 import type { SessionAdminClient } from "@/lib/session/supabase-store";
 import { createOptionalAdminSupabase } from "@/lib/supabase/admin";
@@ -18,22 +21,29 @@ export type SessionBackendHealthReport = {
   status: SessionBackendHealthStatus;
   transport: SessionTransportKind;
   failClosed: boolean;
+  supabaseReachable: boolean;
+  schemaCompatible: boolean;
+  configuration: SessionConfigurationPresence;
   issues: SessionConfigIssue[];
   detail?: string;
 };
 
 const SUPABASE_BACKEND = "supabase" as const;
 
-function classifySchemaProbeError(message: string): SessionBackendHealthStatus | null {
-  const lower = message.toLowerCase();
-  if (
-    lower.includes("code_hint") ||
-    (lower.includes("revoked_at") && lower.includes("does not exist")) ||
-    (lower.includes("column") && lower.includes("does not exist")) ||
-    (lower.includes("relation") && lower.includes("does not exist"))
-  ) {
-    return "schema_mismatch";
-  }
+function healthBase(): Pick<SessionBackendHealthReport, "failClosed" | "configuration" | "issues"> {
+  return {
+    failClosed: isFailClosedProduction(),
+    configuration: getSessionConfigurationPresence(),
+    issues: listSessionConfigIssues(),
+  };
+}
+
+function classifySchemaProbeError(error: {
+  message?: string;
+  code?: string;
+}): SessionBackendHealthStatus | null {
+  const category = classifySupabaseFailure(error);
+  if (category === "schema_mismatch") return "schema_mismatch";
   return null;
 }
 
@@ -41,30 +51,44 @@ function classifySchemaProbeError(message: string): SessionBackendHealthStatus |
 export async function probeDurableSessionSchema(
   client: SessionAdminClient,
 ): Promise<SessionBackendHealthReport> {
-  const failClosed = isFailClosedProduction();
   const base = {
     transport: SUPABASE_BACKEND,
-    failClosed,
-    issues: [] as SessionConfigIssue[],
+    ...healthBase(),
   };
 
   const guest = await client.from("guest_sessions").select("id").limit(1);
   if (guest.error) {
-    const schema = classifySchemaProbeError(guest.error.message);
+    const schema = classifySchemaProbeError(guest.error);
     return {
       ready: false,
       status: schema ?? "unavailable",
+      supabaseReachable: !schema,
+      schemaCompatible: false,
       ...base,
       detail: "guest_sessions probe failed",
     };
   }
 
+  const leftover = await client.from("pairing_codes").select("code, code_hint").limit(1);
+  if (!leftover.error) {
+    return {
+      ready: false,
+      status: "schema_mismatch",
+      supabaseReachable: true,
+      schemaCompatible: false,
+      ...base,
+      detail: "pairing_codes still exposes plaintext columns",
+    };
+  }
+
   const pairing = await client.from("pairing_codes").select("code_hash, revoked_at").limit(1);
   if (pairing.error) {
-    const schema = classifySchemaProbeError(pairing.error.message);
+    const schema = classifySchemaProbeError(pairing.error);
     return {
       ready: false,
       status: schema ?? "unavailable",
+      supabaseReachable: schema !== "schema_mismatch",
+      schemaCompatible: false,
       ...base,
       detail: "pairing_codes probe failed",
     };
@@ -75,10 +99,12 @@ export async function probeDurableSessionSchema(
     .select("secret_hash, revoked_at")
     .limit(1);
   if (credentials.error) {
-    const schema = classifySchemaProbeError(credentials.error.message);
+    const schema = classifySchemaProbeError(credentials.error);
     return {
       ready: false,
       status: schema ?? "unavailable",
+      supabaseReachable: schema !== "schema_mismatch",
+      schemaCompatible: false,
       ...base,
       detail: "session_credentials probe failed",
     };
@@ -87,31 +113,28 @@ export async function probeDurableSessionSchema(
   return {
     ready: true,
     status: "ready",
+    supabaseReachable: true,
+    schemaCompatible: true,
     ...base,
   };
 }
 
 export async function assessSessionBackendHealth(): Promise<SessionBackendHealthReport> {
-  const failClosed = isFailClosedProduction();
+  const base = healthBase();
   let transport: SessionTransportKind;
   try {
     transport = resolveSessionTransport();
   } catch (error) {
-    if (error instanceof SessionServiceError && error.code === "server_misconfigured") {
-      return {
-        ready: false,
-        status: "misconfigured",
-        transport: failClosed ? SUPABASE_BACKEND : "memory",
-        failClosed,
-        issues: listSessionConfigIssues(),
-      };
-    }
+    const misconfigured =
+      error instanceof SessionServiceError &&
+      (error.code === "server_misconfigured" || error.code === "configuration_error");
     return {
       ready: false,
-      status: "unavailable",
-      transport: failClosed ? SUPABASE_BACKEND : "memory",
-      failClosed,
-      issues: listSessionConfigIssues(),
+      status: misconfigured ? "misconfigured" : "unavailable",
+      transport: base.failClosed ? SUPABASE_BACKEND : "memory",
+      supabaseReachable: false,
+      schemaCompatible: false,
+      ...base,
     };
   }
 
@@ -120,7 +143,9 @@ export async function assessSessionBackendHealth(): Promise<SessionBackendHealth
       ready: true,
       status: "ready",
       transport: "memory",
-      failClosed,
+      supabaseReachable: false,
+      schemaCompatible: true,
+      ...base,
       issues: [],
     };
   }
@@ -131,8 +156,9 @@ export async function assessSessionBackendHealth(): Promise<SessionBackendHealth
       ready: false,
       status: "misconfigured",
       transport: SUPABASE_BACKEND,
-      failClosed,
-      issues: listSessionConfigIssues(),
+      supabaseReachable: false,
+      schemaCompatible: false,
+      ...base,
     };
   }
 

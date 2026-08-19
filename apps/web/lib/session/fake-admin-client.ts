@@ -25,21 +25,26 @@ export function createFakeSessionDatabase(): FakeSessionDatabase {
 
 type QueryAction = "select" | "insert" | "update" | "upsert" | "delete";
 
-class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string } | null }> {
+class FakeQuery implements PromiseLike<{
+  data: unknown;
+  error: { message: string; code?: string } | null;
+}> {
   private action: QueryAction = "select";
   private payload: Row | null = null;
   private filters: Array<(row: Row) => boolean> = [];
   private orderBy: { column: string; ascending: boolean } | null = null;
   private limitCount: number | null = null;
   private wantSingle = false;
+  private selectedColumns: string | null = null;
 
   constructor(
     private readonly db: FakeSessionDatabase,
     private readonly table: keyof FakeSessionDatabase,
   ) {}
 
-  select(): this {
+  select(columns?: string): this {
     this.action = "select";
+    this.selectedColumns = columns ?? null;
     return this;
   }
 
@@ -72,7 +77,11 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
   }
 
   is(column: string, value: unknown): this {
-    this.filters.push((row) => row[column] === value);
+    this.filters.push((row) => {
+      const current = row[column];
+      if (value === null) return current === null || current === undefined;
+      return current === value;
+    });
     return this;
   }
 
@@ -91,7 +100,7 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
     return this;
   }
 
-  maybeSingle(): Promise<{ data: Row | null; error: { message: string } | null }> {
+  maybeSingle(): Promise<{ data: Row | null; error: { message: string; code?: string } | null }> {
     this.wantSingle = true;
     return this.execute().then((result) => ({
       data: Array.isArray(result.data)
@@ -101,11 +110,14 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
     }));
   }
 
-  then<TResult1 = { data: unknown; error: { message: string } | null }, TResult2 = never>(
+  then<
+    TResult1 = { data: unknown; error: { message: string; code?: string } | null },
+    TResult2 = never,
+  >(
     onfulfilled?:
       | ((value: {
           data: unknown;
-          error: { message: string } | null;
+          error: { message: string; code?: string } | null;
         }) => TResult1 | PromiseLike<TResult1>)
       | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
@@ -113,7 +125,7 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
     return this.execute().then(onfulfilled, onrejected);
   }
 
-  private execute(): Promise<{ data: unknown; error: { message: string } | null }> {
+  private execute(): Promise<{ data: unknown; error: { message: string; code?: string } | null }> {
     try {
       return Promise.resolve(this.run());
     } catch (error) {
@@ -162,10 +174,23 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
     }
   }
 
-  private run(): { data: unknown; error: { message: string } | null } {
+  private run(): { data: unknown; error: { message: string; code?: string } | null } {
     if (this.action === "insert") {
       if (!this.payload) throw new Error("missing insert payload");
       this.assertNoForbidden(this.payload);
+      if (this.table === "pairing_codes") {
+        const hash = this.payload.code_hash;
+        if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) {
+          return {
+            data: null,
+            error: {
+              message:
+                "new row for relation pairing_codes violates check constraint pairing_codes_code_hash_hmac_chk",
+              code: "23514",
+            },
+          };
+        }
+      }
       const row: Row = { ...this.payload };
       if (
         (this.table === "pairing_codes" ||
@@ -210,6 +235,19 @@ class FakeQuery implements PromiseLike<{ data: unknown; error: { message: string
       this.db[this.table] = remaining;
       return { data: [], error: null };
     }
+    if (this.table === "pairing_codes" && this.selectedColumns) {
+      const requested = this.selectedColumns.split(",").map((part) => part.trim());
+      const leftover = requested.find((column) => FORBIDDEN_PAIRING_KEYS.includes(column));
+      if (leftover) {
+        return {
+          data: null,
+          error: {
+            message: `Could not find the '${leftover}' column of 'pairing_codes' in the schema cache`,
+            code: "PGRST204",
+          },
+        };
+      }
+    }
     const selected = this.matched();
     return { data: this.wantSingle ? (selected[0] ?? null) : selected, error: null };
   }
@@ -226,18 +264,87 @@ export function createFakeAdminClient(db: FakeSessionDatabase) {
   };
 }
 
-export function createFailingAdminClient(message = "simulated database error") {
+export function createFailingAdminClient(message = "simulated database error", code?: string) {
   return {
     from: () => ({
       select: () => ({
         eq: () => ({
-          maybeSingle: async () => ({ data: null, error: { message } }),
+          maybeSingle: async () => ({ data: null, error: { message, code } }),
         }),
+        limit: async () => ({ data: null, error: { message, code } }),
       }),
-      insert: async () => ({ data: null, error: { message } }),
+      insert: async () => ({ data: null, error: { message, code } }),
       update: () => ({
-        eq: () => ({ error: { message } }),
+        eq: () => ({ error: { message, code } }),
       }),
     }),
+  };
+}
+
+export function createStalePairingSchemaClient() {
+  return createFailingAdminClient(
+    "Could not find the 'revoked_at' column of 'pairing_codes' in the schema cache",
+    "PGRST204",
+  );
+}
+
+/** PostgREST cache missing `revoked_at` only. Inserts that omit the column succeed. */
+export function createRevokedAtUnknownColumnClient() {
+  const db = createFakeSessionDatabase();
+  const inner = createFakeAdminClient(db);
+  return {
+    db,
+    from(relation: string) {
+      const query = inner.from(relation);
+      if (relation !== "pairing_codes") return query;
+      return {
+        insert(row: Row) {
+          if (Object.prototype.hasOwnProperty.call(row, "revoked_at")) {
+            return Promise.resolve({
+              data: null,
+              error: {
+                message:
+                  "Could not find the 'revoked_at' column of 'pairing_codes' in the schema cache",
+                code: "PGRST204",
+              },
+            });
+          }
+          return query.insert(row);
+        },
+        select: query.select.bind(query),
+        update: query.update.bind(query),
+        delete: query.delete.bind(query),
+      };
+    },
+  };
+}
+
+/** Pre-hotfix pairing_codes: `code_hint` remains NOT NULL. */
+export function createPreHotfixPairingSchemaClient() {
+  const db = createFakeSessionDatabase();
+  const inner = createFakeAdminClient(db);
+  return {
+    db,
+    from(relation: string) {
+      const query = inner.from(relation);
+      if (relation !== "pairing_codes") return query;
+      return {
+        insert(row: Row) {
+          if (row.code_hint == null) {
+            return Promise.resolve({
+              data: null,
+              error: {
+                message: 'null value in column "code_hint" violates not-null constraint',
+                code: "23502",
+              },
+            });
+          }
+          return query.insert(row);
+        },
+        select: query.select.bind(query),
+        update: query.update.bind(query),
+        delete: query.delete.bind(query),
+      };
+    },
   };
 }

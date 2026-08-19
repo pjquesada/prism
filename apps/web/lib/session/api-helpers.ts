@@ -62,6 +62,9 @@ export function jsonError(code: string, message: string, status: number): Respon
       "server_misconfigured",
       "session_backend_unavailable",
       "schema_mismatch",
+      "constraint_violation",
+      "database_unavailable",
+      "configuration_error",
     ] as const
   ).includes(known as SessionErrorCode)
     ? safeMessageForCode(known)

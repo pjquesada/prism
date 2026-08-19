@@ -30,7 +30,7 @@ import {
   timingSafeDigestEqual,
 } from "@/lib/session/crypto";
 import { logSessionBackendEvent } from "@/lib/session/backend-log";
-import { classifyDatabaseError } from "@/lib/session/db-error";
+import { classifyDatabaseError, classifySupabaseFailure } from "@/lib/session/db-error";
 import { SessionServiceError } from "@/lib/session/errors";
 import { safeMessageForCode } from "@/lib/session/safe-errors";
 
@@ -157,16 +157,61 @@ function asParams(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function throwIfError(error: { message: string } | null, fallback: string): void {
+const HMAC_HEX_RE = /^[a-f0-9]{64}$/;
+
+const PLAINTEXT_PAIRING_KEYS = ["code", "code_hint", "plaintext_code", "pairing_code"] as const;
+
+/** Post-hotfix pairing_codes insert. Omits `revoked_at` so a stale PostgREST cache (PGRST204) can still accept the row; Postgres defaults it to null. Never includes plaintext columns. */
+export function buildPairingCodeInsert(input: {
+  sessionId: string;
+  codeHmac: string;
+  expiresAt: string;
+  createdAt: string;
+}): {
+  session_id: string;
+  code_hash: string;
+  attempts: number;
+  max_attempts: number;
+  expires_at: string;
+  consumed_at: null;
+  created_at: string;
+} {
+  if (!HMAC_HEX_RE.test(input.codeHmac)) {
+    throw new SessionServiceError("schema_mismatch", safeMessageForCode("schema_mismatch"), 503);
+  }
+  const row = {
+    session_id: input.sessionId,
+    code_hash: input.codeHmac,
+    attempts: 0,
+    max_attempts: PAIRING_MAX_ATTEMPTS,
+    expires_at: input.expiresAt,
+    consumed_at: null as const,
+    created_at: input.createdAt,
+  };
+  for (const key of PLAINTEXT_PAIRING_KEYS) {
+    if (key in row) {
+      throw new SessionServiceError("schema_mismatch", safeMessageForCode("schema_mismatch"), 503);
+    }
+  }
+  return row;
+}
+
+function throwIfError(
+  error: { message: string; code?: string | null } | null,
+  operation: string,
+  table?: string,
+): void {
   if (error) {
-    const code = classifyDatabaseError(error.message || fallback);
+    const category = classifySupabaseFailure(error);
+    const sessionCode = classifyDatabaseError(error.message, error.code);
     logSessionBackendEvent({
-      operation: fallback,
-      category: code,
-      code,
-      detail: error.message || fallback,
+      operation,
+      table,
+      category,
+      code: sessionCode,
+      pgCode: error.code ?? undefined,
     });
-    throw new SessionServiceError(code, safeMessageForCode(code), 503);
+    throw new SessionServiceError(sessionCode, safeMessageForCode(sessionCode), 503);
   }
 }
 
@@ -316,7 +361,7 @@ export async function createGuestSessionDurable(
     expires_at: expiresAt,
     closed_at: null,
   });
-  throwIfError(sessionError, "Failed to create session.");
+  throwIfError(sessionError, "Failed to create session.", "guest_sessions");
 
   const writes = await Promise.all([
     client.from("session_devices").insert({
@@ -348,37 +393,44 @@ export async function createGuestSessionDurable(
       seq: 1,
       updated_at: createdAt,
     }),
-    client.from("pairing_codes").insert({
-      session_id: sessionId,
-      code_hash: codeHmac,
-      attempts: 0,
-      max_attempts: PAIRING_MAX_ATTEMPTS,
-      expires_at: pairingExpiresAt,
-      consumed_at: null,
-      revoked_at: null,
-      created_at: createdAt,
-    }),
+    client.from("pairing_codes").insert(
+      buildPairingCodeInsert({
+        sessionId,
+        codeHmac,
+        expiresAt: pairingExpiresAt,
+        createdAt,
+      }),
+    ),
     client.from("session_credentials").insert({
       session_id: sessionId,
       device_id: hostDeviceId,
       secret_hash: credential.secretHmac,
       role,
       expires_at: credential.expiresAt,
-      revoked_at: null,
       created_at: createdAt,
     }),
   ]);
 
-  const writeError = writes.find((result) => result.error)?.error as
-    { message: string } | undefined;
+  const writeTables = [
+    "session_devices",
+    "playback_state",
+    "active_preset_snapshots",
+    "pairing_codes",
+    "session_credentials",
+  ] as const;
+  const failedWriteIndex = writes.findIndex((result) => result.error);
+  const writeError = (failedWriteIndex >= 0 ? writes[failedWriteIndex]?.error : undefined) as
+    { message: string; code?: string | null } | undefined;
   if (writeError) {
     await client.from("guest_sessions").delete().eq("id", sessionId);
-    const code = classifyDatabaseError(writeError.message);
+    const category = classifySupabaseFailure(writeError);
+    const code = classifyDatabaseError(writeError.message, writeError.code);
     logSessionBackendEvent({
       operation: "createGuestSession.writes",
-      category: code,
+      table: writeTables[failedWriteIndex] ?? "guest_sessions",
+      category,
       code,
-      detail: writeError.message,
+      pgCode: writeError.code ?? undefined,
     });
     throw new SessionServiceError(code, safeMessageForCode(code), 503);
   }
@@ -488,7 +540,7 @@ export async function joinWithPairingCodeDurable(
     .is("revoked_at", null)
     .gt("expires_at", nowIso())
     .maybeSingle();
-  throwIfError(pairingError, "Failed to look up pairing code.");
+  throwIfError(pairingError, "Failed to look up pairing code.", "pairing_codes");
 
   if (!matched) {
     throw new SessionServiceError("invalid_or_expired", "Invalid or expired pairing code.", 400);
@@ -600,17 +652,15 @@ export async function rotatePairingCodeDurable(
 
   const pairingCode = generatePairingCode((size) => randomBytes(size));
   const pairingExpiresAt = nowIso(Date.now() + PAIRING_CODE_TTL_MS);
-  const { error: insertError } = await client.from("pairing_codes").insert({
-    session_id: cred.sessionId,
-    code_hash: digestPairingCode(pairingCode, getSessionSigningSecret()),
-    attempts: 0,
-    max_attempts: PAIRING_MAX_ATTEMPTS,
-    expires_at: pairingExpiresAt,
-    consumed_at: null,
-    revoked_at: null,
-    created_at: now,
-  });
-  throwIfError(insertError, "Failed to rotate pairing code.");
+  const { error: insertError } = await client.from("pairing_codes").insert(
+    buildPairingCodeInsert({
+      sessionId: cred.sessionId,
+      codeHmac: digestPairingCode(pairingCode, getSessionSigningSecret()),
+      expiresAt: pairingExpiresAt,
+      createdAt: now,
+    }),
+  );
+  throwIfError(insertError, "Failed to rotate pairing code.", "pairing_codes");
   return { pairingCode, pairingExpiresAt };
 }
 

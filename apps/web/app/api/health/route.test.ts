@@ -29,9 +29,12 @@ describe("GET /api/health", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(body.checks.app.status).toBe("reachable");
+    expect(body.phase).toBe("1D");
+    expect(body.checks.app.reachable).toBe(true);
     expect(body.checks.sessionBackend.status).toBe("ready");
     expect(body.checks.sessionBackend.transport).toBe("memory");
+    expect(body.checks.sessionSchema.compatible).toBe(true);
+    expect(typeof body.checks.configuration.sessionSigningSecret).toBe("boolean");
   });
 
   it("returns 503 with misconfigured session backend in production without secrets", async () => {
@@ -45,10 +48,13 @@ describe("GET /api/health", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.ok).toBe(false);
-    expect(body.checks.app.status).toBe("reachable");
+    expect(body.phase).toBe("1D");
+    expect(body.checks.app.reachable).toBe(true);
     expect(body.checks.sessionBackend.status).toBe("misconfigured");
     expect(body.checks.sessionBackend.failClosed).toBe(true);
+    expect(body.checks.configuration.serviceRoleKey).toBe(false);
     expect(JSON.stringify(body)).not.toMatch(/SUPABASE_SERVICE_ROLE_KEY=/);
     expect(JSON.stringify(body)).not.toMatch(/SESSION_SIGNING_SECRET=./);
+    expect(body.phase).not.toBe("1A");
   });
 });

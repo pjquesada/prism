@@ -26,6 +26,9 @@ function messageForCreateError(code: string): string {
     "server_misconfigured",
     "session_backend_unavailable",
     "schema_mismatch",
+    "constraint_violation",
+    "database_unavailable",
+    "configuration_error",
   ];
   if (knownCodes.includes(known)) {
     return safeMessageForCode(known);

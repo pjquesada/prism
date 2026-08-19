@@ -10,7 +10,10 @@ export type SessionErrorCode =
   | "backend_unavailable"
   | "server_misconfigured"
   | "session_backend_unavailable"
-  | "schema_mismatch";
+  | "schema_mismatch"
+  | "constraint_violation"
+  | "database_unavailable"
+  | "configuration_error";
 
 export class SessionServiceError extends Error {
   readonly code: SessionErrorCode;
