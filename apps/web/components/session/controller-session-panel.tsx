@@ -2,36 +2,51 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  createBuiltInPresets,
   defaultParamsForVisualizer,
+  mergeActivePresetSnapshot,
+  parseVisualizerParams,
+  type ActivePresetSnapshot,
   type DisplayMode,
   type PlaybackState,
+  type PresetConfig,
   type VisualizerId,
 } from "@prism/contracts";
+import type { SyncEngineState } from "@prism/sync-engine";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
+import { SessionPresetControls } from "@/components/session/session-preset-controls";
 import { SessionVisualizerStage } from "@/components/session/session-visualizer-stage";
+import { SessionSyncStatus, type SyncSaveState } from "@/components/session/session-sync-status";
+import { VisualizerSelector } from "@/components/visualizer-selector";
 import { takeSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
 
-const VISUALIZERS: { id: VisualizerId; label: string }[] = [
-  { id: "spectrum", label: "Spectrum" },
-  { id: "particles", label: "Particles" },
-  { id: "album_world", label: "Album World" },
-];
+const PARAM_DEBOUNCE_MS = 250;
+
+function builtinFor(visualizerId: VisualizerId): PresetConfig | undefined {
+  return createBuiltInPresets().find((preset) => preset.visualizerId === visualizerId);
+}
 
 export function ControllerSessionPanel() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const { client, sync } = useSessionClient();
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SyncSaveState>("saved");
   const [restoreStarted, setRestoreStarted] = useState(false);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [joinUrl, setJoinUrl] = useState<string | null>(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
   const [rotating, setRotating] = useState(false);
+  const [optimisticPreset, setOptimisticPreset] = useState<ActivePresetSnapshot | null>(null);
+  const [optimisticDisplayMode, setOptimisticDisplayMode] = useState<DisplayMode | null>(null);
   const attemptedSessionRef = useRef<string | null>(null);
+  const publishGenRef = useRef(0);
+  const paramTimerRef = useRef<number | null>(null);
 
   const restore = useCallback(() => {
     if (!sessionId) return;
@@ -50,30 +65,178 @@ export function ControllerSessionPanel() {
     restore();
   }, [restore, sessionId]);
 
+  useEffect(() => {
+    return () => {
+      if (paramTimerRef.current) window.clearTimeout(paramTimerRef.current);
+    };
+  }, []);
+
   const retry = () => {
     attemptedSessionRef.current = null;
     restore();
   };
 
-  const publishVisual = useCallback(
-    async (patch: {
-      visualizerId?: VisualizerId;
-      displayMode?: DisplayMode;
-      params?: Record<string, unknown>;
-    }) => {
+  const isController = sync.localRole === "controller" || sync.localRole === "combined";
+  const confirmedPreset = sync.snapshot?.preset ?? null;
+  const viewPreset = optimisticPreset ?? confirmedPreset;
+  const viewDisplayMode = optimisticDisplayMode ?? sync.snapshot?.session.displayMode ?? "mirror";
+  const viewSync: SyncEngineState = useMemo(() => {
+    if (!sync.snapshot || (!optimisticPreset && !optimisticDisplayMode)) return sync;
+    return {
+      ...sync,
+      snapshot: {
+        ...sync.snapshot,
+        preset: optimisticPreset ?? sync.snapshot.preset,
+        session: {
+          ...sync.snapshot.session,
+          displayMode: viewDisplayMode,
+        },
+      },
+    };
+  }, [sync, optimisticPreset, optimisticDisplayMode, viewDisplayMode]);
+
+  const runPublish = useCallback(
+    async (
+      work: () => Promise<void>,
+      nextPreset?: ActivePresetSnapshot,
+      nextMode?: DisplayMode,
+    ) => {
       if (!sync.localDeviceId) return;
+      const gen = ++publishGenRef.current;
+      if (nextPreset) setOptimisticPreset(nextPreset);
+      if (nextMode) setOptimisticDisplayMode(nextMode);
+      setSaveState("saving");
+      setSyncError(null);
       try {
+        await work();
+        if (gen !== publishGenRef.current) return;
+        setOptimisticPreset(null);
+        setOptimisticDisplayMode(null);
+        setSaveState("saved");
+      } catch (err) {
+        if (gen !== publishGenRef.current) return;
+        setOptimisticPreset(null);
+        setOptimisticDisplayMode(null);
+        setSaveState("error");
+        setSyncError(err instanceof Error ? err.message : "broadcast_failed");
+      }
+    },
+    [sync.localDeviceId],
+  );
+
+  const publishVisualizer = useCallback(
+    (visualizerId: VisualizerId) => {
+      if (!sync.localDeviceId || !confirmedPreset) return;
+      const builtin = builtinFor(visualizerId);
+      const next = mergeActivePresetSnapshot(
+        confirmedPreset,
+        {
+          visualizerId,
+          params: builtin?.params ?? defaultParamsForVisualizer(visualizerId),
+          presetId: builtin?.id ?? null,
+        },
+        confirmedPreset.seq,
+        new Date().toISOString(),
+      );
+      void runPublish(async () => {
+        await client.publish({
+          type: "preset.apply",
+          sessionId,
+          deviceId: sync.localDeviceId!,
+          payload: next,
+        });
+      }, next);
+    },
+    [client, confirmedPreset, runPublish, sessionId, sync.localDeviceId],
+  );
+
+  const publishPreset = useCallback(
+    (preset: PresetConfig) => {
+      if (!sync.localDeviceId || !confirmedPreset) return;
+      const next = mergeActivePresetSnapshot(
+        confirmedPreset,
+        {
+          visualizerId: preset.visualizerId,
+          params: parseVisualizerParams(preset.visualizerId, preset.params),
+          presetId: preset.id,
+        },
+        confirmedPreset.seq,
+        new Date().toISOString(),
+      );
+      void runPublish(async () => {
+        await client.publish({
+          type: "preset.apply",
+          sessionId,
+          deviceId: sync.localDeviceId!,
+          payload: next,
+        });
+      }, next);
+    },
+    [client, confirmedPreset, runPublish, sessionId, sync.localDeviceId],
+  );
+
+  const publishParamsNow = useCallback(
+    (params: Record<string, unknown>, base: ActivePresetSnapshot) => {
+      if (!sync.localDeviceId) return;
+      const next = mergeActivePresetSnapshot(
+        base,
+        { params: parseVisualizerParams(base.visualizerId, params) },
+        base.seq,
+        new Date().toISOString(),
+      );
+      void runPublish(async () => {
         await client.publish({
           type: "visual.intent",
           sessionId,
-          deviceId: sync.localDeviceId,
-          payload: patch,
+          deviceId: sync.localDeviceId!,
+          payload: {
+            visualizerId: next.visualizerId,
+            qualityTier: next.qualityTier,
+            params: next.params,
+          },
         });
-      } catch (err) {
-        setRestoreError(err instanceof Error ? `publish:${err.message}` : "broadcast_failed");
-      }
+      }, next);
     },
-    [client, sessionId, sync.localDeviceId],
+    [client, runPublish, sessionId, sync.localDeviceId],
+  );
+
+  const onParamsChange = useCallback(
+    (params: Record<string, unknown>) => {
+      const base = viewPreset;
+      if (!base) return;
+      const next = mergeActivePresetSnapshot(
+        base,
+        { params: parseVisualizerParams(base.visualizerId, params) },
+        base.seq,
+        new Date().toISOString(),
+      );
+      setOptimisticPreset(next);
+      setSaveState("saving");
+      if (paramTimerRef.current) window.clearTimeout(paramTimerRef.current);
+      paramTimerRef.current = window.setTimeout(() => {
+        publishParamsNow(params, next);
+      }, PARAM_DEBOUNCE_MS);
+    },
+    [publishParamsNow, viewPreset],
+  );
+
+  const publishDisplayMode = useCallback(
+    (displayMode: DisplayMode) => {
+      if (!sync.localDeviceId) return;
+      void runPublish(
+        async () => {
+          await client.publish({
+            type: "visual.intent",
+            sessionId,
+            deviceId: sync.localDeviceId!,
+            payload: { displayMode },
+          });
+        },
+        undefined,
+        displayMode,
+      );
+    },
+    [client, runPublish, sessionId, sync.localDeviceId],
   );
 
   const onPlaybackAnchor = useCallback(
@@ -89,7 +252,6 @@ export function ControllerSessionPanel() {
     [client, sessionId, sync.localDeviceId],
   );
 
-  const isController = sync.localRole === "controller" || sync.localRole === "combined";
   const restoreFailed =
     Boolean(restoreError) ||
     sync.connection === "error" ||
@@ -156,16 +318,43 @@ export function ControllerSessionPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <div className="sticky top-0 z-20 -mx-4 border-b border-prism-slate/80 bg-prism-ink/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm uppercase tracking-[0.14em] text-prism-aurora">Controller</p>
+              <h1 className="mt-1 font-display text-3xl font-semibold text-prism-foam sm:text-4xl">
+                Session
+              </h1>
+              <p
+                className="mt-1 font-mono text-sm text-prism-mist"
+                data-testid="controller-session-id"
+              >
+                {sessionId}
+              </p>
+            </div>
+            {viewPreset ? (
+              <SessionSyncStatus
+                visualizerId={viewPreset.visualizerId}
+                connection={sync.connection}
+                saveState={saveState}
+                seq={viewPreset.seq}
+              />
+            ) : null}
+          </div>
+          {viewPreset ? (
+            <VisualizerSelector
+              value={viewPreset.visualizerId}
+              disabled={!isController}
+              onSelect={publishVisualizer}
+            />
+          ) : null}
+        </div>
+      </div>
+
       <ConnectionBanner status={sync.connection} />
 
       <div className="flex flex-wrap items-start justify-between gap-6">
-        <div>
-          <p className="text-sm uppercase tracking-[0.14em] text-prism-aurora">Controller</p>
-          <h1 className="mt-2 font-display text-4xl font-semibold text-prism-foam">Session</h1>
-          <p className="mt-2 font-mono text-sm text-prism-mist" data-testid="controller-session-id">
-            {sessionId}
-          </p>
-        </div>
         <div className="flex flex-wrap items-start gap-6">
           {pairingCode ? (
             <div>
@@ -213,48 +402,30 @@ export function ControllerSessionPanel() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3" role="group" aria-label="Visualizer">
-        {VISUALIZERS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={
-              sync.snapshot?.preset.visualizerId === option.id
-                ? "prism-btn prism-btn-primary"
-                : "prism-btn prism-btn-ghost"
-            }
-            data-testid={`viz-${option.id}`}
-            disabled={!isController}
-            aria-pressed={sync.snapshot?.preset.visualizerId === option.id}
-            onClick={() => {
-              void publishVisual({
-                visualizerId: option.id,
-                params: defaultParamsForVisualizer(option.id),
-              });
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-
       <div className="flex flex-wrap gap-3" role="group" aria-label="Display mode">
         {(["mirror", "complementary"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
             className={
-              sync.snapshot?.session.displayMode === mode
-                ? "prism-btn prism-btn-primary"
-                : "prism-btn prism-btn-ghost"
+              viewDisplayMode === mode ? "prism-btn prism-btn-primary" : "prism-btn prism-btn-ghost"
             }
             disabled={!isController}
-            onClick={() => void publishVisual({ displayMode: mode })}
+            onClick={() => void publishDisplayMode(mode)}
           >
             {mode === "mirror" ? "Mirror" : "Complementary"}
           </button>
         ))}
       </div>
+
+      {viewPreset ? (
+        <SessionPresetControls
+          preset={viewPreset}
+          disabled={!isController}
+          onApplyPreset={publishPreset}
+          onParamsChange={onParamsChange}
+        />
+      ) : null}
 
       <div className="flex flex-wrap gap-3">
         <button
@@ -321,6 +492,12 @@ export function ControllerSessionPanel() {
         </div>
       ) : null}
 
+      {syncError ? (
+        <p className="text-sm text-prism-ember" role="alert" data-testid="controller-sync-error">
+          Could not sync visualizer ({syncError}). The previous visualizer was restored.
+        </p>
+      ) : null}
+
       {restoreError && restoreError !== "unauthorized" ? (
         <p className="text-sm text-prism-ember" role="alert">
           Could not restore session ({restoreError}).
@@ -328,7 +505,7 @@ export function ControllerSessionPanel() {
       ) : null}
 
       <SessionVisualizerStage
-        sync={sync}
+        sync={viewSync}
         isAudioAuthority={isController}
         onPlaybackAnchor={onPlaybackAnchor}
       />

@@ -8,6 +8,7 @@ import {
   defaultParamsForVisualizer,
   deviceRoleSchema,
   displayModeSchema,
+  mergeActivePresetSnapshot,
   publicGuestIdentitySchema,
   sessionSnapshotSchema,
   type DeviceRole,
@@ -28,7 +29,10 @@ import {
   normalizeAndValidatePairingCode,
   timingSafeDigestEqual,
 } from "@/lib/session/crypto";
+import { logSessionBackendEvent } from "@/lib/session/backend-log";
+import { classifyDatabaseError } from "@/lib/session/db-error";
 import { SessionServiceError } from "@/lib/session/errors";
+import { safeMessageForCode } from "@/lib/session/safe-errors";
 
 /**
  * Loosely typed admin client surface. Domain validation happens with Zod at the edges.
@@ -155,7 +159,14 @@ function asParams(value: unknown): Record<string, unknown> {
 
 function throwIfError(error: { message: string } | null, fallback: string): void {
   if (error) {
-    throw new SessionServiceError("backend_unavailable", error.message || fallback, 503);
+    const code = classifyDatabaseError(error.message || fallback);
+    logSessionBackendEvent({
+      operation: fallback,
+      category: code,
+      code,
+      detail: error.message || fallback,
+    });
+    throw new SessionServiceError(code, safeMessageForCode(code), 503);
   }
 }
 
@@ -362,7 +373,14 @@ export async function createGuestSessionDurable(
     { message: string } | undefined;
   if (writeError) {
     await client.from("guest_sessions").delete().eq("id", sessionId);
-    throw new SessionServiceError("backend_unavailable", writeError.message, 503);
+    const code = classifyDatabaseError(writeError.message);
+    logSessionBackendEvent({
+      operation: "createGuestSession.writes",
+      category: code,
+      code,
+      detail: writeError.message,
+    });
+    throw new SessionServiceError(code, safeMessageForCode(code), 503);
   }
 
   const snapshot = await loadSnapshot(client, sessionId);
@@ -712,7 +730,7 @@ export async function publishAuthorizedMessageDurable(
 
   const now = nowIso();
   const seq = await bumpSessionSeq(client, cred.sessionId);
-  const stamped: SessionMessage = { ...message, seq, sentAt: now };
+  let stamped: SessionMessage = { ...message, seq, sentAt: now };
 
   switch (stamped.type) {
     case "ping": {
@@ -747,37 +765,52 @@ export async function publishAuthorizedMessageDurable(
       break;
     }
     case "preset.apply": {
+      const snapshot = await loadSnapshot(client, cred.sessionId);
+      const nextPreset = mergeActivePresetSnapshot(snapshot.preset, stamped.payload, seq, now);
       const { error } = await client
         .from("active_preset_snapshots")
         .update({
-          visualizer_id: stamped.payload.visualizerId,
-          quality_tier: stamped.payload.qualityTier,
-          preset_id: stamped.payload.presetId,
-          params: stamped.payload.params as Json,
+          visualizer_id: nextPreset.visualizerId,
+          quality_tier: nextPreset.qualityTier,
+          preset_id: nextPreset.presetId,
+          params: nextPreset.params as Json,
           seq,
           updated_at: now,
         })
         .eq("session_id", cred.sessionId);
       throwIfError(error, "Failed to apply preset.");
+      stamped = { ...stamped, payload: nextPreset };
       break;
     }
     case "visual.intent": {
       const snapshot = await loadSnapshot(client, cred.sessionId);
+      const nextPreset = mergeActivePresetSnapshot(snapshot.preset, stamped.payload, seq, now);
+      const displayMode = stamped.payload.displayMode;
       const { error: presetError } = await client
         .from("active_preset_snapshots")
         .update({
-          visualizer_id: stamped.payload.visualizerId ?? snapshot.preset.visualizerId,
-          quality_tier: stamped.payload.qualityTier ?? snapshot.preset.qualityTier,
-          params: (stamped.payload.params ?? snapshot.preset.params) as Json,
+          visualizer_id: nextPreset.visualizerId,
+          quality_tier: nextPreset.qualityTier,
+          preset_id: nextPreset.presetId,
+          params: nextPreset.params as Json,
           seq,
           updated_at: now,
         })
         .eq("session_id", cred.sessionId);
       throwIfError(presetError, "Failed to update visual intent.");
-      if (stamped.payload.displayMode) {
+      stamped = {
+        ...stamped,
+        payload: {
+          ...stamped.payload,
+          visualizerId: nextPreset.visualizerId,
+          qualityTier: nextPreset.qualityTier,
+          params: nextPreset.params,
+        },
+      };
+      if (displayMode) {
         const { error } = await client
           .from("guest_sessions")
-          .update({ display_mode: stamped.payload.displayMode, updated_at: now, seq })
+          .update({ display_mode: displayMode, updated_at: now, seq })
           .eq("id", cred.sessionId);
         throwIfError(error, "Failed to update display mode.");
       }

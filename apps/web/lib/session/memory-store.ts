@@ -5,6 +5,7 @@ import {
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
   defaultParamsForVisualizer,
+  mergeActivePresetSnapshot,
   publicGuestIdentitySchema,
   sessionSnapshotSchema,
   type DeviceRole,
@@ -481,7 +482,7 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
 
   const now = nowIso();
   const seq = nextSeq(session);
-  const stamped: SessionMessage = { ...message, seq, sentAt: now };
+  let stamped: SessionMessage = { ...message, seq, sentAt: now };
 
   switch (stamped.type) {
     case "ping": {
@@ -504,21 +505,37 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
       session.snapshot.playback = { ...stamped.payload, seq };
       break;
     case "preset.apply":
-      session.snapshot.preset = { ...stamped.payload, seq };
-      break;
-    case "visual.intent":
-      session.snapshot.preset = {
-        ...session.snapshot.preset,
-        visualizerId: stamped.payload.visualizerId ?? session.snapshot.preset.visualizerId,
-        qualityTier: stamped.payload.qualityTier ?? session.snapshot.preset.qualityTier,
-        params: stamped.payload.params ?? session.snapshot.preset.params,
-        updatedAt: now,
+      session.snapshot.preset = mergeActivePresetSnapshot(
+        session.snapshot.preset,
+        stamped.payload,
         seq,
+        now,
+      );
+      stamped = { ...stamped, payload: session.snapshot.preset };
+      break;
+    case "visual.intent": {
+      const nextPreset = mergeActivePresetSnapshot(
+        session.snapshot.preset,
+        stamped.payload,
+        seq,
+        now,
+      );
+      session.snapshot.preset = nextPreset;
+      const displayMode = stamped.payload.displayMode;
+      stamped = {
+        ...stamped,
+        payload: {
+          ...stamped.payload,
+          visualizerId: nextPreset.visualizerId,
+          qualityTier: nextPreset.qualityTier,
+          params: nextPreset.params,
+        },
       };
-      if (stamped.payload.displayMode) {
-        session.snapshot.session.displayMode = stamped.payload.displayMode;
+      if (displayMode) {
+        session.snapshot.session.displayMode = displayMode;
       }
       break;
+    }
     case "display.mode":
       session.snapshot.session.displayMode = stamped.payload.displayMode;
       break;

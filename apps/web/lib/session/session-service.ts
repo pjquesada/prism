@@ -46,7 +46,7 @@ function requireAdminClient(): SessionAdminClient {
   const client = createOptionalAdminSupabase();
   if (!client) {
     throw new SessionServiceError(
-      "backend_unavailable",
+      "server_misconfigured",
       "Durable session backend is not configured.",
       503,
     );

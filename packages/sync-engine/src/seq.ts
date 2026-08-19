@@ -16,10 +16,14 @@ export type SeqDecision =
 
 /**
  * Apply sequence rules: ignore stale, detect gaps, accept contiguous seq.
- * Snapshots may reset the cursor to the snapshot seq.
+ * Snapshots apply when seq is greater than or equal to the last applied seq.
+ * Older snapshots are ignored so they cannot overwrite newer visualizer state.
  */
 export function decideSeq(state: SeqState, message: SessionMessage): SeqDecision {
   if (message.type === "session.snapshot") {
+    if (message.seq < state.lastAppliedSeq) {
+      return { action: "ignore_stale", next: state };
+    }
     return {
       action: "apply",
       next: { lastAppliedSeq: message.seq, needsSnapshot: false },

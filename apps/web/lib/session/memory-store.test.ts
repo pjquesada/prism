@@ -106,4 +106,77 @@ describe("memory session store", () => {
     expect(stamped.type).toBe("visual.intent");
     expect(JSON.stringify(stamped)).not.toMatch(/"bands"/);
   });
+
+  it("rejects visualizer mutations from a display credential", () => {
+    const created = createGuestSession({ role: "controller" });
+    const joined = joinWithPairingCode({
+      code: created.pairingCode,
+      role: "display",
+      ip: "10.0.0.12",
+    });
+    expect(() =>
+      publishAuthorizedMessage(joined.credential.token, {
+        type: "visual.intent",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: joined.credential.deviceId,
+        payload: { visualizerId: "particles" },
+      }),
+    ).toThrow(/Displays cannot publish/);
+    expect(() =>
+      publishAuthorizedMessage(joined.credential.token, {
+        type: "preset.apply",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: joined.credential.deviceId,
+        payload: {
+          visualizerId: "album_world",
+          qualityTier: "high",
+          presetId: null,
+          params: {},
+          updatedAt: new Date().toISOString(),
+          seq: 0,
+        },
+      }),
+    ).toThrow(/Displays cannot publish/);
+    expect(getSnapshotForCredential(created.credential.token).preset.visualizerId).toBe("spectrum");
+  });
+
+  it("persists controller visualizer changes for later restore", () => {
+    const created = createGuestSession({ role: "controller" });
+    const initialPresetSeq = created.snapshot.preset.seq;
+    const initialSessionSeq = created.snapshot.session.seq;
+    publishAuthorizedMessage(created.credential.token, {
+      type: "visual.intent",
+      seq: 0,
+      sentAt: new Date().toISOString(),
+      sessionId: created.snapshot.session.id,
+      deviceId: created.credential.deviceId,
+      payload: { visualizerId: "particles" },
+    });
+    expect(getSnapshotForCredential(created.credential.token).preset.visualizerId).toBe(
+      "particles",
+    );
+    publishAuthorizedMessage(created.credential.token, {
+      type: "preset.apply",
+      seq: 0,
+      sentAt: new Date().toISOString(),
+      sessionId: created.snapshot.session.id,
+      deviceId: created.credential.deviceId,
+      payload: {
+        visualizerId: "album_world",
+        qualityTier: "high",
+        presetId: "builtin-album-world-drift",
+        params: { parallaxStrength: 1.2 },
+        updatedAt: new Date().toISOString(),
+        seq: 0,
+      },
+    });
+    const restored = getSnapshotForCredential(created.credential.token);
+    expect(restored.preset.visualizerId).toBe("album_world");
+    expect(restored.preset.seq).toBeGreaterThan(initialPresetSeq);
+    expect(restored.session.seq).toBeGreaterThan(initialSessionSeq);
+  });
 });

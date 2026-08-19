@@ -56,8 +56,20 @@ describe("production fail-closed session config", () => {
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     await expect(createGuestSession({ role: "controller" })).rejects.toMatchObject({
-      code: "backend_unavailable",
+      code: "server_misconfigured",
     });
+  });
+
+  it("uses supabase transport when production env is fully configured", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.PRISM_SESSION_BACKEND;
+    delete process.env.PRISM_ALLOW_MEMORY_SESSIONS;
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "service";
+    process.env.SESSION_SIGNING_SECRET = "production-session-signing-secret-min-32b";
+    expect(getSessionTransport()).toBe("supabase");
+    expect(isFailClosedProduction()).toBe(true);
   });
 
   it("identifies memory transport only when explicitly allowed", () => {

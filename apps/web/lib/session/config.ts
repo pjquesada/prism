@@ -5,6 +5,13 @@ import { SessionServiceError } from "@/lib/session/errors";
 
 export type SessionTransportKind = "memory" | "supabase";
 
+export type SessionConfigIssue =
+  | "missing_supabase_url"
+  | "missing_supabase_anon_key"
+  | "missing_service_role_key"
+  | "missing_signing_secret"
+  | "signing_secret_too_short";
+
 const MEMORY_BACKEND = "memory";
 const SUPABASE_BACKEND = "supabase";
 
@@ -31,18 +38,34 @@ export function isDurableSessionBackend(): boolean {
   return resolveSessionTransport() === SUPABASE_BACKEND;
 }
 
+export function listSessionConfigIssues(
+  env: NodeJS.ProcessEnv = process.env,
+): SessionConfigIssue[] {
+  const issues: SessionConfigIssue[] = [];
+  const publicConfig = readSupabasePublicEnv(env);
+  if (!publicConfig?.url) issues.push("missing_supabase_url");
+  if (!publicConfig?.anonKey) issues.push("missing_supabase_anon_key");
+  if (!env.SUPABASE_SERVICE_ROLE_KEY?.trim()) issues.push("missing_service_role_key");
+  const secret = env.SESSION_SIGNING_SECRET?.trim() ?? "";
+  if (!secret) issues.push("missing_signing_secret");
+  else if (Buffer.byteLength(secret, "utf8") < SESSION_SIGNING_SECRET_MIN_BYTES) {
+    issues.push("signing_secret_too_short");
+  }
+  return issues;
+}
+
 export function getSessionSigningSecret(): string {
   const secret = process.env.SESSION_SIGNING_SECRET?.trim() ?? "";
   if (!secret) {
     throw new SessionServiceError(
-      "backend_unavailable",
+      "server_misconfigured",
       "SESSION_SIGNING_SECRET is not configured.",
       503,
     );
   }
   if (Buffer.byteLength(secret, "utf8") < SESSION_SIGNING_SECRET_MIN_BYTES) {
     throw new SessionServiceError(
-      "backend_unavailable",
+      "server_misconfigured",
       "SESSION_SIGNING_SECRET is too short.",
       503,
     );
@@ -53,7 +76,7 @@ export function getSessionSigningSecret(): string {
 function requireSupabaseAdmin(): void {
   if (readSupabaseAdminEnv() === null) {
     throw new SessionServiceError(
-      "backend_unavailable",
+      "server_misconfigured",
       "Supabase server credentials are not configured.",
       503,
     );
@@ -91,7 +114,6 @@ export function resolveSessionTransport(): SessionTransportKind {
     return SUPABASE_BACKEND;
   }
 
-  // Local development without an explicit backend: memory, still requires signing secret.
   getSessionSigningSecret();
   return MEMORY_BACKEND;
 }
