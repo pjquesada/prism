@@ -8,6 +8,7 @@ import {
   defaultParamsForVisualizer,
   deviceRoleSchema,
   displayModeSchema,
+  mergeActivePresetSnapshot,
   publicGuestIdentitySchema,
   sessionSnapshotSchema,
   type DeviceRole,
@@ -712,7 +713,7 @@ export async function publishAuthorizedMessageDurable(
 
   const now = nowIso();
   const seq = await bumpSessionSeq(client, cred.sessionId);
-  const stamped: SessionMessage = { ...message, seq, sentAt: now };
+  let stamped: SessionMessage = { ...message, seq, sentAt: now };
 
   switch (stamped.type) {
     case "ping": {
@@ -747,37 +748,52 @@ export async function publishAuthorizedMessageDurable(
       break;
     }
     case "preset.apply": {
+      const snapshot = await loadSnapshot(client, cred.sessionId);
+      const nextPreset = mergeActivePresetSnapshot(snapshot.preset, stamped.payload, seq, now);
       const { error } = await client
         .from("active_preset_snapshots")
         .update({
-          visualizer_id: stamped.payload.visualizerId,
-          quality_tier: stamped.payload.qualityTier,
-          preset_id: stamped.payload.presetId,
-          params: stamped.payload.params as Json,
+          visualizer_id: nextPreset.visualizerId,
+          quality_tier: nextPreset.qualityTier,
+          preset_id: nextPreset.presetId,
+          params: nextPreset.params as Json,
           seq,
           updated_at: now,
         })
         .eq("session_id", cred.sessionId);
       throwIfError(error, "Failed to apply preset.");
+      stamped = { ...stamped, payload: nextPreset };
       break;
     }
     case "visual.intent": {
       const snapshot = await loadSnapshot(client, cred.sessionId);
+      const nextPreset = mergeActivePresetSnapshot(snapshot.preset, stamped.payload, seq, now);
+      const displayMode = stamped.payload.displayMode;
       const { error: presetError } = await client
         .from("active_preset_snapshots")
         .update({
-          visualizer_id: stamped.payload.visualizerId ?? snapshot.preset.visualizerId,
-          quality_tier: stamped.payload.qualityTier ?? snapshot.preset.qualityTier,
-          params: (stamped.payload.params ?? snapshot.preset.params) as Json,
+          visualizer_id: nextPreset.visualizerId,
+          quality_tier: nextPreset.qualityTier,
+          preset_id: nextPreset.presetId,
+          params: nextPreset.params as Json,
           seq,
           updated_at: now,
         })
         .eq("session_id", cred.sessionId);
       throwIfError(presetError, "Failed to update visual intent.");
-      if (stamped.payload.displayMode) {
+      stamped = {
+        ...stamped,
+        payload: {
+          ...stamped.payload,
+          visualizerId: nextPreset.visualizerId,
+          qualityTier: nextPreset.qualityTier,
+          params: nextPreset.params,
+        },
+      };
+      if (displayMode) {
         const { error } = await client
           .from("guest_sessions")
-          .update({ display_mode: stamped.payload.displayMode, updated_at: now, seq })
+          .update({ display_mode: displayMode, updated_at: now, seq })
           .eq("id", cred.sessionId);
         throwIfError(error, "Failed to update display mode.");
       }

@@ -109,6 +109,28 @@ describe("durable supabase session store", () => {
     expect(restored.preset.visualizerId).toBe("album_world");
   });
 
+  it("rejects visualizer mutations from a display credential", async () => {
+    const db = createFakeSessionDatabase();
+    const client = createFakeAdminClient(db);
+    const created = await createGuestSessionDurable(client, { role: "controller" });
+    const joined = await joinWithPairingCodeDurable(client, {
+      code: created.pairingCode,
+      role: "display",
+    });
+    await expect(
+      publishAuthorizedMessageDurable(client, joined.credential.token, {
+        type: "visual.intent",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: joined.credential.deviceId,
+        payload: { visualizerId: "particles" },
+      }),
+    ).rejects.toThrow(/Displays cannot publish/);
+    const snapshot = await getSnapshotForCredentialDurable(client, created.credential.token);
+    expect(snapshot.preset.visualizerId).toBe("spectrum");
+  });
+
   it("does not fall back to the memory store when the database errors", async () => {
     const memory = createGuestSession({ role: "controller" });
     await expect(

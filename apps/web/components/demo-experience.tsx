@@ -15,6 +15,7 @@ import {
 import { VisualizerCanvas } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
 
+import { VisualizerSelector } from "@/components/visualizer-selector";
 import {
   createBlankPreset,
   duplicatePreset,
@@ -35,12 +36,6 @@ const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
 const DEMO_TRACK_DESCRIPTION =
   "Original synthetic royalty-free loop generated for Prism (16s, ~96 BPM).";
-
-const VISUALIZER_OPTIONS: { id: VisualizerId; label: string }[] = [
-  { id: "spectrum", label: "Spectrum" },
-  { id: "particles", label: "Particles" },
-  { id: "album_world", label: "Album World" },
-];
 
 const QUALITY_OPTIONS: { id: QualityTier | "auto"; label: string }[] = [
   { id: "auto", label: "Auto" },
@@ -245,32 +240,19 @@ export function DemoExperience({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3" role="group" aria-label="Visualizer">
-        {VISUALIZER_OPTIONS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={
-              option.id === visualizerId
-                ? "prism-btn prism-btn-primary"
-                : "prism-btn prism-btn-ghost"
-            }
-            aria-pressed={option.id === visualizerId}
-            onClick={() => {
-              setVisualizerId(option.id);
-              const match = mergedPresets.find((p) => p.visualizerId === option.id && p.isBuiltIn);
-              if (match) {
-                applyPreset(match);
-              } else {
-                setDraftParams(defaultParamsForVisualizer(option.id));
-                setActivePresetId(`draft-${option.id}`);
-              }
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      <VisualizerSelector
+        value={visualizerId}
+        onSelect={(id) => {
+          setVisualizerId(id);
+          const match = mergedPresets.find((p) => p.visualizerId === id && p.isBuiltIn);
+          if (match) {
+            applyPreset(match);
+          } else {
+            setDraftParams(defaultParamsForVisualizer(id));
+            setActivePresetId(`draft-${id}`);
+          }
+        }}
+      />
 
       <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Quality">
         <span className="text-sm text-prism-mist">Quality</span>

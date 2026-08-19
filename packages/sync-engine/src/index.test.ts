@@ -79,6 +79,49 @@ describe("sync-engine seq", () => {
     });
     expect(gap.action).toBe("request_snapshot");
   });
+
+  it("ignores stale snapshots so they cannot overwrite newer state", () => {
+    const current = createSeqState(5);
+    const staleSnapshot = decideSeq(current, {
+      type: "session.snapshot",
+      seq: 3,
+      sentAt: new Date().toISOString(),
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      deviceId: "d1",
+      payload: {
+        session: {
+          id: "11111111-1111-4111-8111-111111111111",
+          hostDeviceId: "d1",
+          status: "active",
+          displayMode: "mirror",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          closedAt: null,
+          seq: 3,
+        },
+        devices: [],
+        playback: {
+          audioMode: "demo_track",
+          isPlaying: false,
+          positionMs: 0,
+          rate: 1,
+          trackId: "demo-track",
+          updatedAt: new Date().toISOString(),
+          seq: 3,
+        },
+        preset: {
+          visualizerId: "spectrum",
+          qualityTier: "high",
+          presetId: null,
+          params: {},
+          updatedAt: new Date().toISOString(),
+          seq: 3,
+        },
+      },
+    });
+    expect(staleSnapshot.action).toBe("ignore_stale");
+  });
 });
 
 describe("sync-engine reducer", () => {
@@ -153,6 +196,28 @@ describe("sync-engine reducer", () => {
     });
     expect(next.applied).toBe(true);
     expect(next.state.snapshot?.preset.visualizerId).toBe("particles");
+
+    const stale = applySessionMessage(next.state, {
+      type: "session.snapshot",
+      seq: 1,
+      sentAt: now,
+      sessionId,
+      deviceId: "controller-1",
+      payload: {
+        ...next.state.snapshot!,
+        session: { ...next.state.snapshot!.session, seq: 1 },
+        preset: {
+          visualizerId: "spectrum",
+          qualityTier: "high",
+          presetId: null,
+          params: {},
+          updatedAt: now,
+          seq: 1,
+        },
+      },
+    });
+    expect(stale.applied).toBe(false);
+    expect(stale.state.snapshot?.preset.visualizerId).toBe("particles");
   });
 });
 

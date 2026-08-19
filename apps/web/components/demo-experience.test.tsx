@@ -56,6 +56,11 @@ vi.mock("@prism/visualizers", () => ({
     label: id === "particles" ? "Particles" : id === "album_world" ? "Album World" : "Spectrum",
     defaultParams: { sensitivity: 1 },
   }),
+  listVisualizerPlugins: () => [
+    { id: "spectrum", label: "Spectrum", description: "Spectrum bars" },
+    { id: "particles", label: "Particles", description: "Particle field" },
+    { id: "album_world", label: "Album World", description: "Album art world" },
+  ],
 }));
 
 import { DemoExperience } from "@/components/demo-experience";

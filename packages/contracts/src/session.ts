@@ -5,7 +5,10 @@ import {
   deviceRoleSchema,
   qualityTierSchema,
   visualizerIdSchema,
+  type QualityTier,
+  type VisualizerId,
 } from "./domain.js";
+import { defaultParamsForVisualizer, parseVisualizerParams } from "./presets.js";
 
 /** Multi-display layout mode for session followers. */
 export const displayModeSchema = z.enum(["mirror", "complementary"]);
@@ -63,6 +66,37 @@ export const activePresetSnapshotSchema = z.object({
   seq: z.number().int().nonnegative(),
 });
 export type ActivePresetSnapshot = z.infer<typeof activePresetSnapshotSchema>;
+
+export type ActivePresetPatch = {
+  visualizerId?: VisualizerId;
+  qualityTier?: QualityTier;
+  params?: Record<string, unknown>;
+  presetId?: string | null;
+};
+
+/**
+ * Canonicalize a controller visualizer/preset patch against the current snapshot.
+ * Params are validated with the visualizer Zod schemas and fall back to defaults.
+ */
+export function mergeActivePresetSnapshot(
+  current: ActivePresetSnapshot,
+  patch: ActivePresetPatch,
+  seq: number,
+  updatedAt: string,
+): ActivePresetSnapshot {
+  const visualizerId = visualizerIdSchema.parse(patch.visualizerId ?? current.visualizerId);
+  const switched = visualizerId !== current.visualizerId;
+  const rawParams =
+    patch.params ?? (switched ? defaultParamsForVisualizer(visualizerId) : current.params);
+  return activePresetSnapshotSchema.parse({
+    visualizerId,
+    qualityTier: patch.qualityTier ?? current.qualityTier,
+    presetId: patch.presetId === undefined ? (switched ? null : current.presetId) : patch.presetId,
+    params: parseVisualizerParams(visualizerId, rawParams),
+    updatedAt,
+    seq,
+  });
+}
 
 export const guestSessionSchema = z.object({
   id: z.string().uuid(),

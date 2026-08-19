@@ -240,12 +240,23 @@ export class SessionClient {
         sentAt: message.sentAt ?? new Date().toISOString(),
       },
     };
-    const res = await fetch(`/api/session/${this.identity.sessionId}/broadcast`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: jsonHeaders(),
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(
+        `/api/session/${this.identity.sessionId}/broadcast`,
+        {
+          method: "POST",
+          headers: jsonHeaders(),
+          body: JSON.stringify(body),
+        },
+        CONNECT_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("broadcast_timeout");
+      }
+      throw new Error("broadcast_failed");
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data?.error?.code ?? "broadcast_failed");
@@ -373,6 +384,9 @@ export class SessionClient {
     const result = applySessionMessage(this.state, raw);
     this.state = result.state;
     this.emit();
+    if (result.requestSnapshot) {
+      void this.requestSnapshot();
+    }
     return { requestSnapshot: result.requestSnapshot };
   }
 

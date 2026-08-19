@@ -7,6 +7,7 @@ import {
   createSilentFeatureFrame,
   createUserPreset,
   deviceRoleSchema,
+  mergeActivePresetSnapshot,
   parseVisualizerParams,
   presetConfigSchema,
   qualityTierSchema,
@@ -58,5 +59,36 @@ describe("contracts schemas", () => {
     });
     expect(presetConfigSchema.parse(user).isBuiltIn).toBe(false);
     expect(parseVisualizerParams("particles", { particleCount: 512 }).particleCount).toBe(512);
+  });
+
+  it("canonicalizes visualizer patches with validated params", () => {
+    const now = "2026-08-19T00:00:00.000Z";
+    const current = {
+      visualizerId: "spectrum" as const,
+      qualityTier: "high" as const,
+      presetId: "builtin-spectrum-calm",
+      params: { ...spectrumParamsDefaults },
+      updatedAt: now,
+      seq: 1,
+    };
+    const particles = mergeActivePresetSnapshot(current, { visualizerId: "particles" }, 2, now);
+    expect(particles.visualizerId).toBe("particles");
+    expect(particles.presetId).toBeNull();
+    expect(particles.seq).toBe(2);
+    expect(particles.params.particleCount).toBeDefined();
+
+    const withPreset = mergeActivePresetSnapshot(
+      particles,
+      {
+        visualizerId: "album_world",
+        presetId: "builtin-album-world-drift",
+        params: { parallaxStrength: 1.1 },
+      },
+      3,
+      now,
+    );
+    expect(withPreset.visualizerId).toBe("album_world");
+    expect(withPreset.presetId).toBe("builtin-album-world-drift");
+    expect(withPreset.params.parallaxStrength).toBe(1.1);
   });
 });

@@ -8,9 +8,9 @@ export const metadata: Metadata = {
 
 export default function ControllerSessionPage() {
   return (
-    <main className="prism-shell">
+    <main className="relative min-h-dvh overflow-x-hidden">
       <div className="prism-aurora-band" aria-hidden="true" />
-      <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-6 py-10">
+      <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-4 py-6 sm:px-6 lg:py-10">
         <ControllerSessionPanel />
       </div>
     </main>
