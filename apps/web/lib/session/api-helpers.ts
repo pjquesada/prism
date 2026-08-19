@@ -4,7 +4,8 @@ import { deviceRoleSchema, displayModeSchema, sessionMessageSchema } from "@pris
 import { containsForbiddenPayloadKeys, normalizePairingCodeInput } from "@prism/sync-engine";
 
 import { getAppUrl } from "@/lib/session/config";
-import { SessionServiceError } from "@/lib/session/errors";
+import { SessionServiceError, type SessionErrorCode } from "@/lib/session/errors";
+import { safeMessageForCode } from "@/lib/session/safe-errors";
 
 export const GUEST_CREDENTIAL_COOKIE_PREFIX = "prism_guest_";
 
@@ -47,7 +48,25 @@ export function assertSafeSessionPayload(payload: unknown): void {
 }
 
 export function jsonError(code: string, message: string, status: number): Response {
-  return Response.json({ error: { code, message } }, { status });
+  const known = code as SessionErrorCode;
+  const bodyMessage = (
+    [
+      "invalid_or_expired",
+      "rate_limited",
+      "unauthorized",
+      "ended",
+      "not_found",
+      "payload_too_large",
+      "forbidden_payload",
+      "backend_unavailable",
+      "server_misconfigured",
+      "session_backend_unavailable",
+      "schema_mismatch",
+    ] as const
+  ).includes(known as SessionErrorCode)
+    ? safeMessageForCode(known)
+    : message;
+  return Response.json({ error: { code, message: bodyMessage } }, { status });
 }
 
 export function getBearerToken(request: Request): string | null {

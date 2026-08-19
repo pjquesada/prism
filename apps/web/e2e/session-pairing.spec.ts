@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("Phase 1D session pairing", () => {
+  test("health endpoint reports reachable app and ready session backend", async ({ request }) => {
+    const res = await request.get("/api/health");
+    expect(res.ok()).toBeTruthy();
+    const body = await res.json();
+    expect(body.checks.app.status).toBe("reachable");
+    expect(body.checks.sessionBackend.status).toBe("ready");
+    expect(JSON.stringify(body)).not.toMatch(/SESSION_SIGNING_SECRET/);
+  });
+
   test("two browser contexts: controller change reaches display", async ({ browser }) => {
     const controllerContext = await browser.newContext();
     const displayContext = await browser.newContext();

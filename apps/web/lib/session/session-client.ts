@@ -96,8 +96,19 @@ export class SessionClient {
     );
     const data = await res.json();
     if (!res.ok) {
-      this.patchConnection(res.status === 401 ? "unauthorized" : "error");
-      throw new Error(data?.error?.code ?? "create_failed");
+      const code = (data?.error?.code as string | undefined) ?? "create_failed";
+      if (code === "unauthorized") this.patchConnection("unauthorized");
+      else if (
+        code === "server_misconfigured" ||
+        code === "session_backend_unavailable" ||
+        code === "schema_mismatch" ||
+        code === "backend_unavailable"
+      ) {
+        this.patchConnection("idle");
+      } else {
+        this.patchConnection("error");
+      }
+      throw new Error(code);
     }
     this.identity = publicGuestIdentitySchema.parse(data.credential);
     this.state = setLocalIdentity(this.state, {

@@ -135,7 +135,7 @@ describe("durable supabase session store", () => {
     const memory = createGuestSession({ role: "controller" });
     await expect(
       createGuestSessionDurable(createFailingAdminClient(), { role: "controller" }),
-    ).rejects.toMatchObject({ code: "backend_unavailable" });
+    ).rejects.toMatchObject({ code: "session_backend_unavailable" });
     expect(() => joinWithPairingCode({ code: memory.pairingCode, role: "display" })).not.toThrow();
     expect(() => getSnapshotForCredential("not-a-token")).toThrow(/Unauthorized/);
   });

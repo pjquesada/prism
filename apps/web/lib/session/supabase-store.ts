@@ -29,7 +29,10 @@ import {
   normalizeAndValidatePairingCode,
   timingSafeDigestEqual,
 } from "@/lib/session/crypto";
+import { logSessionBackendEvent } from "@/lib/session/backend-log";
+import { classifyDatabaseError } from "@/lib/session/db-error";
 import { SessionServiceError } from "@/lib/session/errors";
+import { safeMessageForCode } from "@/lib/session/safe-errors";
 
 /**
  * Loosely typed admin client surface. Domain validation happens with Zod at the edges.
@@ -156,7 +159,14 @@ function asParams(value: unknown): Record<string, unknown> {
 
 function throwIfError(error: { message: string } | null, fallback: string): void {
   if (error) {
-    throw new SessionServiceError("backend_unavailable", error.message || fallback, 503);
+    const code = classifyDatabaseError(error.message || fallback);
+    logSessionBackendEvent({
+      operation: fallback,
+      category: code,
+      code,
+      detail: error.message || fallback,
+    });
+    throw new SessionServiceError(code, safeMessageForCode(code), 503);
   }
 }
 
@@ -363,7 +373,14 @@ export async function createGuestSessionDurable(
     { message: string } | undefined;
   if (writeError) {
     await client.from("guest_sessions").delete().eq("id", sessionId);
-    throw new SessionServiceError("backend_unavailable", writeError.message, 503);
+    const code = classifyDatabaseError(writeError.message);
+    logSessionBackendEvent({
+      operation: "createGuestSession.writes",
+      category: code,
+      code,
+      detail: writeError.message,
+    });
+    throw new SessionServiceError(code, safeMessageForCode(code), 503);
   }
 
   const snapshot = await loadSnapshot(client, sessionId);

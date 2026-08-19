@@ -11,7 +11,7 @@ const CONNECTION_LABELS: Record<ConnectionStatus, string> = {
   connecting: "Connecting",
   connected: "Connected",
   reconnecting: "Reconnecting",
-  offline: "Offline",
+  offline: "No network",
   unauthorized: "Unauthorized",
   ended: "Ended",
   error: "Connection error",

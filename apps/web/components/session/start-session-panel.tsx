@@ -6,11 +6,37 @@ import { useState } from "react";
 
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
+import { SessionBackendBanner } from "@/components/session/session-backend-banner";
+import { safeMessageForCode } from "@/lib/session/safe-errors";
+import type { SessionErrorCode } from "@/lib/session/errors";
+import { useSessionBackendHealth } from "@/lib/session/use-session-backend-health";
 import { stashSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
+
+function messageForCreateError(code: string): string {
+  const known = code as SessionErrorCode;
+  const knownCodes: SessionErrorCode[] = [
+    "invalid_or_expired",
+    "rate_limited",
+    "unauthorized",
+    "ended",
+    "not_found",
+    "payload_too_large",
+    "forbidden_payload",
+    "backend_unavailable",
+    "server_misconfigured",
+    "session_backend_unavailable",
+    "schema_mismatch",
+  ];
+  if (knownCodes.includes(known)) {
+    return safeMessageForCode(known);
+  }
+  return "Could not start session.";
+}
 
 export function StartSessionPanel() {
   const router = useRouter();
   const { client, sync } = useSessionClient();
+  const backend = useSessionBackendHealth();
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [joinUrl, setJoinUrl] = useState<string | null>(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
@@ -19,6 +45,7 @@ export function StartSessionPanel() {
   const [role, setRole] = useState<"combined" | "controller">("combined");
 
   const sessionId = sync.snapshot?.session.id;
+  const backendBlocksStart = backend.status !== "ready" && backend.status !== "checking";
 
   const start = async () => {
     setBusy(true);
@@ -35,7 +62,9 @@ export function StartSessionPanel() {
       setJoinUrl(created.joinUrl);
       setPairingExpiresAt(created.pairingExpiresAt);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "create_failed");
+      const code = err instanceof Error ? err.message : "create_failed";
+      setError(messageForCreateError(code));
+      void backend.refresh();
     } finally {
       setBusy(false);
     }
@@ -43,7 +72,11 @@ export function StartSessionPanel() {
 
   return (
     <div className="flex flex-col gap-8">
-      <ConnectionBanner status={sync.connection} />
+      {!sessionId ? (
+        <SessionBackendBanner status={backend.status} />
+      ) : (
+        <ConnectionBanner status={sync.connection} />
+      )}
 
       {!sessionId ? (
         <section className="flex flex-col gap-4">
@@ -76,14 +109,14 @@ export function StartSessionPanel() {
           <button
             type="button"
             className="prism-btn prism-btn-primary w-fit"
-            disabled={busy}
+            disabled={busy || backendBlocksStart}
             onClick={() => void start()}
           >
             {busy ? "Starting…" : "Start guest session"}
           </button>
           {error ? (
             <p className="text-sm text-prism-ember" role="alert">
-              Could not start session ({error}).
+              {error}
             </p>
           ) : null}
         </section>

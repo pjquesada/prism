@@ -6,7 +6,11 @@ export type SessionErrorCode =
   | "not_found"
   | "payload_too_large"
   | "forbidden_payload"
-  | "backend_unavailable";
+  /** @deprecated Prefer session_backend_unavailable or server_misconfigured */
+  | "backend_unavailable"
+  | "server_misconfigured"
+  | "session_backend_unavailable"
+  | "schema_mismatch";
 
 export class SessionServiceError extends Error {
   readonly code: SessionErrorCode;
