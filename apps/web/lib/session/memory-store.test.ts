@@ -146,6 +146,8 @@ describe("memory session store", () => {
 
   it("persists controller visualizer changes for later restore", () => {
     const created = createGuestSession({ role: "controller" });
+    const initialPresetSeq = created.snapshot.preset.seq;
+    const initialSessionSeq = created.snapshot.session.seq;
     publishAuthorizedMessage(created.credential.token, {
       type: "visual.intent",
       seq: 0,
@@ -174,7 +176,7 @@ describe("memory session store", () => {
     });
     const restored = getSnapshotForCredential(created.credential.token);
     expect(restored.preset.visualizerId).toBe("album_world");
-    expect(restored.preset.seq).toBeGreaterThan(created.snapshot.preset.seq);
-    expect(restored.session.seq).toBeGreaterThan(created.snapshot.session.seq);
+    expect(restored.preset.seq).toBeGreaterThan(initialPresetSeq);
+    expect(restored.session.seq).toBeGreaterThan(initialSessionSeq);
   });
 });
