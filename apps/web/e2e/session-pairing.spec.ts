@@ -5,7 +5,7 @@ test.describe("Phase 1D session pairing", () => {
     const res = await request.get("/api/health");
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    expect(body.phase).toBe("1D");
+    expect(body.phase).toBe("1E");
     expect(body.checks.app.reachable).toBe(true);
     expect(body.checks.sessionBackend.status).toBe("ready");
     expect(body.checks.sessionSchema.compatible).toBe(true);

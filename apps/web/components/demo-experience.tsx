@@ -2,12 +2,19 @@
 
 import Link from "next/link";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
-import { DemoTrackEngine, silentFrame, type DemoTrackEngineStatus } from "@prism/audio-engine";
+import {
+  DemoTrackEngine,
+  LiveListenEngine,
+  silentFrame,
+  type DemoTrackEngineStatus,
+  type LiveListenEngineStatus,
+} from "@prism/audio-engine";
 import {
   createBuiltInPresets,
   defaultParamsForVisualizer,
   parseVisualizerParams,
   type AudioFeatureFrame,
+  type AudioMode,
   type PresetConfig,
   type QualityTier,
   type VisualizerId,
@@ -15,6 +22,8 @@ import {
 import { VisualizerCanvas } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
 
+import { AudioModeSelector } from "@/components/audio-mode-selector";
+import { LiveListenStatusPanel } from "@/components/live-listen-status";
 import { VisualizerSelector } from "@/components/visualizer-selector";
 import {
   createBlankPreset,
@@ -31,6 +40,7 @@ import {
   type LocalArtworkState,
 } from "@/lib/local-artwork";
 import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
+import { isLiveListenEnabled } from "@/lib/live-listen-enabled";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
@@ -54,8 +64,33 @@ type DemoExperienceProps = {
   initialPresetId?: string;
 };
 
-function statusLabel(status: DemoTrackEngineStatus): string {
-  switch (status) {
+function statusLabel(
+  audioMode: AudioMode,
+  demoStatus: DemoTrackEngineStatus,
+  liveStatus: LiveListenEngineStatus,
+): string {
+  if (audioMode === "live_listen") {
+    switch (liveStatus) {
+      case "requesting":
+        return "Waiting for microphone permission…";
+      case "listening":
+        return "Live Listen — local microphone analysis only";
+      case "paused":
+        return "Live Listen paused";
+      case "denied":
+        return "Microphone permission denied";
+      case "unavailable":
+        return "No microphone found";
+      case "unsupported":
+        return "Microphone is not available in this browser";
+      case "error":
+        return "Live Listen error";
+      case "idle":
+      default:
+        return "Live Listen idle";
+    }
+  }
+  switch (demoStatus) {
     case "loading":
       return "Loading Demo Track…";
     case "needs_gesture":
@@ -82,9 +117,13 @@ export function DemoExperience({
   initialVisualizerId = "spectrum",
   initialPresetId,
 }: DemoExperienceProps) {
+  const liveListenEnabled = isLiveListenEnabled();
   const engineRef = useRef<DemoTrackEngine | null>(null);
+  const liveEngineRef = useRef<LiveListenEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(silentFrame());
+  const [audioMode, setAudioMode] = useState<AudioMode>("demo_track");
   const [status, setStatus] = useState<DemoTrackEngineStatus>("idle");
+  const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [hud, setHud] = useState({ energy: 0, onset: false, bass: 0, mid: 0, high: 0 });
   const [qualityMode, setQualityMode] = useState<QualityTier | "auto">("auto");
@@ -129,6 +168,10 @@ export function DemoExperience({
   }, [initialPresetId, userPresets]);
 
   useEffect(() => {
+    if (audioMode !== "demo_track") {
+      engineRef.current = null;
+      return;
+    }
     const engine = new DemoTrackEngine({ trackUrl: DEMO_TRACK_URL, loop: true });
     engineRef.current = engine;
     let lastHud = 0;
@@ -155,7 +198,40 @@ export function DemoExperience({
       void engine.dispose();
       engineRef.current = null;
     };
-  }, []);
+  }, [audioMode]);
+
+  useEffect(() => {
+    if (audioMode !== "live_listen") {
+      liveEngineRef.current = null;
+      return;
+    }
+    const engine = new LiveListenEngine();
+    liveEngineRef.current = engine;
+    let lastHud = 0;
+    const unsubscribe = engine.subscribe((event) => {
+      featuresRef.current = event.frame;
+      setLiveStatus(event.status);
+      setErrorMessage(event.errorMessage);
+      const now = typeof performance !== "undefined" ? performance.now() : 0;
+      if (now - lastHud > 200) {
+        lastHud = now;
+        setHud({
+          energy: event.frame.energy,
+          onset: event.frame.onset,
+          bass: event.frame.bass,
+          mid: event.frame.mid,
+          high: event.frame.high,
+        });
+      }
+    });
+    void engine.start();
+
+    return () => {
+      unsubscribe();
+      void engine.dispose();
+      liveEngineRef.current = null;
+    };
+  }, [audioMode]);
 
   useEffect(() => {
     return () => {
@@ -175,11 +251,15 @@ export function DemoExperience({
     setPresetName(preset.isBuiltIn ? `${preset.name} Edit` : preset.name);
   };
 
-  const busy = status === "loading";
-  const canPlay = status === "ready" || status === "needs_gesture" || status === "paused";
-  const canPause = status === "playing";
-  const showUnsupported = status === "unsupported";
-  const showError = status === "error";
+  const busy = audioMode === "demo_track" ? status === "loading" : liveStatus === "requesting";
+  const canPlay =
+    audioMode === "live_listen"
+      ? liveStatus === "paused" || liveStatus === "idle"
+      : status === "ready" || status === "needs_gesture" || status === "paused";
+  const canPause = audioMode === "live_listen" ? liveStatus === "listening" : status === "playing";
+  const showUnsupported =
+    audioMode === "demo_track" ? status === "unsupported" : liveStatus === "unsupported";
+  const showError = audioMode === "demo_track" ? status === "error" : false;
   const albumArtUrl =
     visualizerId === "album_world"
       ? artwork.status === "ready"
@@ -194,7 +274,11 @@ export function DemoExperience({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm uppercase tracking-[0.14em] text-prism-aurora">
-            {variant === "combined" ? "Combined · Demo Track" : "Demo Track"}
+            {variant === "combined"
+              ? `Combined · ${audioMode === "live_listen" ? "Live Listen" : "Demo Track"}`
+              : audioMode === "live_listen"
+                ? "Live Listen"
+                : "Demo Track"}
           </p>
           <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-prism-foam sm:text-5xl">
             {plugin.label}
@@ -210,6 +294,14 @@ export function DemoExperience({
             className="prism-btn prism-btn-primary"
             disabled={busy || showUnsupported || (!canPlay && !canPause && status !== "idle")}
             onClick={() => {
+              if (audioMode === "live_listen") {
+                if (canPause) {
+                  void liveEngineRef.current?.pause();
+                  return;
+                }
+                void liveEngineRef.current?.start();
+                return;
+              }
               if (canPause) {
                 void engineRef.current?.pause();
                 return;
@@ -239,6 +331,15 @@ export function DemoExperience({
           </Link>
         </div>
       </div>
+
+      <AudioModeSelector
+        value={audioMode}
+        allowLiveListen={liveListenEnabled}
+        onSelect={(mode) => {
+          setErrorMessage(undefined);
+          setAudioMode(mode);
+        }}
+      />
 
       <VisualizerSelector
         value={visualizerId}
@@ -287,11 +388,15 @@ export function DemoExperience({
             className="absolute inset-0 z-10 flex items-center justify-center bg-prism-ink/50"
             role="status"
           >
-            <p className="text-prism-foam">Loading Demo Track…</p>
+            <p className="text-prism-foam">
+              {audioMode === "live_listen"
+                ? "Waiting for microphone permission…"
+                : "Loading Demo Track…"}
+            </p>
           </div>
         ) : null}
 
-        {showUnsupported ? (
+        {showUnsupported && audioMode === "demo_track" ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center p-6" role="alert">
             <p className="max-w-md text-center text-prism-foam">
               This browser does not support the Web Audio API required for Demo Track analysis.
@@ -317,6 +422,19 @@ export function DemoExperience({
               Retry
             </button>
           </div>
+        ) : null}
+
+        {audioMode === "live_listen" ? (
+          <LiveListenStatusPanel
+            status={liveStatus}
+            errorMessage={errorMessage}
+            onRetry={() => {
+              void liveEngineRef.current?.start();
+            }}
+            onUseDemoTrack={() => {
+              setAudioMode("demo_track");
+            }}
+          />
         ) : null}
 
         <VisualizerCanvas
@@ -505,7 +623,7 @@ export function DemoExperience({
       </div>
 
       <div className="space-y-2" aria-live="polite">
-        <p className="text-sm text-prism-mist">{statusLabel(status)}</p>
+        <p className="text-sm text-prism-mist">{statusLabel(audioMode, status, liveStatus)}</p>
         {errorMessage && status === "needs_gesture" ? (
           <p className="text-sm text-prism-ember">{errorMessage}</p>
         ) : null}

@@ -179,4 +179,18 @@ describe("ControllerSessionPanel visualizer selector", () => {
     expect(screen.getByTestId("sync-save-state").textContent).toMatch(/Save failed/i);
     expect(screen.queryByText(/Restoring session/i)).toBeNull();
   });
+
+  it("publishes a Live Listen playback mode without microphone payloads", async () => {
+    render(<ControllerSessionPanel />);
+    fireEvent.click(await screen.findByTestId("audio-mode-live_listen"));
+    await waitFor(() => {
+      expect(publish).toHaveBeenCalled();
+    });
+    const message = publish.mock.calls.find((call) => {
+      const payload = call[0] as { type?: string; payload?: { audioMode?: string } };
+      return payload.type === "playback.update" && payload.payload?.audioMode === "live_listen";
+    })?.[0] as Record<string, unknown>;
+    expect(message).toBeTruthy();
+    expect(JSON.stringify(message)).not.toMatch(/pcm|microphone|MediaStream|getUserMedia/);
+  });
 });

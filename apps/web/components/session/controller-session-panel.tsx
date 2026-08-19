@@ -9,6 +9,7 @@ import {
   mergeActivePresetSnapshot,
   parseVisualizerParams,
   type ActivePresetSnapshot,
+  type AudioMode,
   type DisplayMode,
   type PlaybackState,
   type PresetConfig,
@@ -16,6 +17,7 @@ import {
 } from "@prism/contracts";
 import type { SyncEngineState } from "@prism/sync-engine";
 
+import { AudioModeSelector } from "@/components/audio-mode-selector";
 import { ConnectionBanner } from "@/components/session/connection-banner";
 import { PairingQr } from "@/components/session/pairing-qr";
 import { SessionPresetControls } from "@/components/session/session-preset-controls";
@@ -23,6 +25,7 @@ import { SessionVisualizerStage } from "@/components/session/session-visualizer-
 import { SessionSyncStatus, type SyncSaveState } from "@/components/session/session-sync-status";
 import { VisualizerSelector } from "@/components/visualizer-selector";
 import { takeSessionMeta, useSessionClient } from "@/lib/session/use-session-client";
+import { isLiveListenEnabled } from "@/lib/live-listen-enabled";
 
 const PARAM_DEBOUNCE_MS = 250;
 
@@ -252,6 +255,27 @@ export function ControllerSessionPanel() {
     [client, sessionId, sync.localDeviceId],
   );
 
+  const publishAudioMode = useCallback(
+    (audioMode: AudioMode) => {
+      if (!sync.localDeviceId || !sync.snapshot) return;
+      const live = audioMode === "live_listen";
+      void client.publish({
+        type: "playback.update",
+        sessionId,
+        deviceId: sync.localDeviceId,
+        payload: {
+          ...sync.snapshot.playback,
+          audioMode,
+          isPlaying: live ? true : sync.snapshot.playback.isPlaying,
+          trackId: live ? "live-listen" : "demo-track",
+          positionMs: live ? 0 : sync.snapshot.playback.positionMs,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    },
+    [client, sessionId, sync.localDeviceId, sync.snapshot],
+  );
+
   const restoreFailed =
     Boolean(restoreError) ||
     sync.connection === "error" ||
@@ -401,6 +425,13 @@ export function ControllerSessionPanel() {
           </button>
         </div>
       </div>
+
+      <AudioModeSelector
+        value={sync.snapshot?.playback.audioMode ?? "demo_track"}
+        allowLiveListen={isLiveListenEnabled()}
+        disabled={!isController}
+        onSelect={publishAudioMode}
+      />
 
       <div className="flex flex-wrap gap-3" role="group" aria-label="Display mode">
         {(["mirror", "complementary"] as const).map((mode) => (
