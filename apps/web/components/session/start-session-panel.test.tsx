@@ -48,14 +48,16 @@ describe("StartSessionPanel backend status", () => {
     render(<StartSessionPanel />);
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("session-backend-banner")[0]?.getAttribute("data-backend-status")).toBe(
-        "misconfigured",
-      );
+      expect(
+        screen.getAllByTestId("session-backend-banner")[0]?.getAttribute("data-backend-status"),
+      ).toBe("misconfigured");
     });
     const banner = screen.getAllByTestId("session-backend-banner")[0]!;
     expect(banner.textContent).toMatch(/not configured on the server/i);
     expect(banner.textContent).not.toMatch(/^Offline$/);
-    const startButton = screen.getByRole("button", { name: /Start guest session/i }) as HTMLButtonElement;
+    const startButton = screen.getByRole("button", {
+      name: /Start guest session/i,
+    }) as HTMLButtonElement;
     expect(startButton.disabled).toBe(true);
   });
 
@@ -79,9 +81,9 @@ describe("StartSessionPanel backend status", () => {
     render(<StartSessionPanel />);
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("session-backend-banner")[0]?.getAttribute("data-backend-status")).toBe(
-        "schema_mismatch",
-      );
+      expect(
+        screen.getAllByTestId("session-backend-banner")[0]?.getAttribute("data-backend-status"),
+      ).toBe("schema_mismatch");
     });
     expect(screen.getAllByTestId("session-backend-banner")[0]?.textContent).toMatch(
       /schema is out of date/i,
