@@ -24,6 +24,7 @@ describe("contracts schemas", () => {
 
   it("parses audio modes and visualizer ids", () => {
     expect(audioModeSchema.parse("demo_track")).toBe("demo_track");
+    expect(audioModeSchema.parse("live_listen")).toBe("live_listen");
     expect(visualizerIdSchema.parse("spectrum")).toBe("spectrum");
     expect(visualizerIdSchema.parse("particles")).toBe("particles");
     expect(visualizerIdSchema.parse("album_world")).toBe("album_world");

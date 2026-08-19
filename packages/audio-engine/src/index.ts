@@ -18,6 +18,20 @@ export {
   type DemoTrackEngineStatus,
 } from "./demo-track-engine.js";
 export {
+  LiveListenEngine,
+  type LiveListenEngineListener,
+  type LiveListenEngineOptions,
+  type LiveListenEngineStatus,
+} from "./live-listen-engine.js";
+export {
+  LIVE_LISTEN_AUDIO_CONSTRAINTS,
+  canRequestMicrophone,
+  classifyGetUserMediaError,
+  stopMediaStream,
+  type LiveListenFailure,
+  type LiveListenFailureStatus,
+} from "./media-permission.js";
+export {
   applyEnvelope,
   buildFeatureFrame,
   clamp01,

@@ -36,9 +36,31 @@ const engineMock = {
   }),
 };
 
+const liveEngineMock = {
+  start: vi.fn(async () => {
+    for (const listener of listeners) {
+      listener({
+        status: "listening",
+        frame: createSilentFeatureFrame(),
+        errorMessage: undefined,
+      });
+    }
+  }),
+  pause: vi.fn(async () => undefined),
+  dispose: vi.fn(async () => undefined),
+  subscribe: vi.fn((listener: (event: unknown) => void) => {
+    listeners.add(listener);
+    listener({ status: "idle", frame: createSilentFeatureFrame() });
+    return () => listeners.delete(listener);
+  }),
+};
+
 vi.mock("@prism/audio-engine", () => ({
   DemoTrackEngine: vi.fn(function DemoTrackEngine() {
     return engineMock;
+  }),
+  LiveListenEngine: vi.fn(function LiveListenEngine() {
+    return liveEngineMock;
   }),
   silentFrame: (timestampMs = 0, bandCount = 32) =>
     createSilentFeatureFrame(timestampMs, bandCount),
@@ -93,5 +115,13 @@ describe("DemoExperience", () => {
     expect(screen.getByRole("heading", { name: /^particles$/i })).toBeTruthy();
     expect(document.querySelectorAll("[data-visualizer]")).toHaveLength(1);
     expect(engineMock.prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts Live Listen locally and does not keep the Demo Track engine", async () => {
+    render(<DemoExperience variant="demo" />);
+    fireEvent.click(screen.getByTestId("audio-mode-live_listen"));
+    expect(engineMock.dispose).toHaveBeenCalled();
+    expect(liveEngineMock.start).toHaveBeenCalled();
+    expect(screen.getByTestId("audio-mode-live_listen").getAttribute("aria-pressed")).toBe("true");
   });
 });

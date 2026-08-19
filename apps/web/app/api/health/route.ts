@@ -9,7 +9,7 @@ export async function GET() {
   const body = {
     ok: sessionBackend.ready,
     service: "prism-web",
-    phase: "1D",
+    phase: "1E",
     checks: {
       app: { status: "reachable" as const },
       sessionBackend: {

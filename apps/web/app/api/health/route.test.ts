@@ -29,6 +29,7 @@ describe("GET /api/health", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+    expect(body.phase).toBe("1E");
     expect(body.checks.app.status).toBe("reachable");
     expect(body.checks.sessionBackend.status).toBe("ready");
     expect(body.checks.sessionBackend.transport).toBe("memory");
@@ -45,6 +46,7 @@ describe("GET /api/health", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.ok).toBe(false);
+    expect(body.phase).toBe("1E");
     expect(body.checks.app.status).toBe("reachable");
     expect(body.checks.sessionBackend.status).toBe("misconfigured");
     expect(body.checks.sessionBackend.failClosed).toBe(true);

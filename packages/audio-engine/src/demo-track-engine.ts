@@ -1,5 +1,6 @@
 import { audioFeatureFrameSchema, type AudioFeatureFrame, type AudioMode } from "@prism/contracts";
 
+import { createAudioContext } from "./audio-context.js";
 import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE, FEATURE_INTERVAL_MS } from "./constants.js";
 import {
   buildFeatureFrame,
@@ -25,20 +26,6 @@ export type DemoTrackEngineListener = (event: {
   frame: AudioFeatureFrame;
   errorMessage?: string;
 }) => void;
-
-function createAudioContext(): AudioContext | null {
-  const Ctor =
-    typeof window !== "undefined"
-      ? (window.AudioContext ??
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)
-      : undefined;
-  if (!Ctor) return null;
-  try {
-    return new Ctor();
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Framework-independent Demo Track playback + local feature extraction.
