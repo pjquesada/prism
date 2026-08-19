@@ -10,16 +10,18 @@ export function redactForServerLog(value: string): string {
 
 export function logSessionBackendEvent(input: {
   operation: string;
+  table?: string;
   category: string;
   code: string;
-  detail?: string;
+  pgCode?: string;
 }): void {
-  const payload = {
+  const payload: Record<string, string> = {
     scope: "session_backend",
     operation: input.operation,
     category: input.category,
     code: input.code,
-    detail: input.detail ? redactForServerLog(input.detail) : undefined,
   };
+  if (input.table) payload.table = input.table;
+  if (input.pgCode) payload.pgCode = input.pgCode;
   console.error(JSON.stringify(payload));
 }

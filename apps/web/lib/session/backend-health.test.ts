@@ -90,28 +90,28 @@ describe("assessSessionBackendHealth", () => {
     expect(report.status).toBe("schema_mismatch");
   });
 
-  it("reports schema mismatch when code_hint column still exists in schema cache", async () => {
+  it("reports schema mismatch when leftover plaintext pairing columns are still exposed", async () => {
     const client = {
       from: (table: string) => {
-        if (table === "guest_sessions") {
-          return { select: () => ({ limit: async () => ({ data: [], error: null }) }) };
-        }
         if (table === "pairing_codes") {
           return {
-            select: () => ({
-              limit: async () => ({
-                data: null,
-                error: { message: "null value in column code_hint violates not-null constraint" },
-              }),
+            select: (columns: string) => ({
+              limit: async () => {
+                if (columns.includes("code_hint")) {
+                  return { data: [], error: null };
+                }
+                return { data: [], error: null };
+              },
             }),
           };
         }
         return { select: () => ({ limit: async () => ({ data: [], error: null }) }) };
       },
     };
-
     const report = await probeDurableSessionSchema(client);
+    expect(report.ready).toBe(false);
     expect(report.status).toBe("schema_mismatch");
+    expect(report.schemaCompatible).toBe(false);
   });
 
   it("reports ready when durable schema probes succeed", async () => {
@@ -121,5 +121,7 @@ describe("assessSessionBackendHealth", () => {
     expect(report.ready).toBe(true);
     expect(report.status).toBe("ready");
     expect(report.transport).toBe("supabase");
+    expect(report.schemaCompatible).toBe(true);
+    expect(report.supabaseReachable).toBe(true);
   });
 });
