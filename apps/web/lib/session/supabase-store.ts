@@ -185,7 +185,7 @@ export function buildPairingCodeInsert(input: {
     attempts: 0,
     max_attempts: PAIRING_MAX_ATTEMPTS,
     expires_at: input.expiresAt,
-    consumed_at: null as const,
+    consumed_at: null,
     created_at: input.createdAt,
   };
   for (const key of PLAINTEXT_PAIRING_KEYS) {
