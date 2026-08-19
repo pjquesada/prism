@@ -5,8 +5,10 @@ test.describe("Phase 1D session pairing", () => {
     const res = await request.get("/api/health");
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    expect(body.checks.app.status).toBe("reachable");
+    expect(body.phase).toBe("1E");
+    expect(body.checks.app.reachable).toBe(true);
     expect(body.checks.sessionBackend.status).toBe("ready");
+    expect(body.checks.sessionSchema.compatible).toBe(true);
     expect(JSON.stringify(body)).not.toMatch(/SESSION_SIGNING_SECRET/);
   });
 

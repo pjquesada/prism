@@ -100,8 +100,11 @@ export class SessionClient {
       if (code === "unauthorized") this.patchConnection("unauthorized");
       else if (
         code === "server_misconfigured" ||
+        code === "configuration_error" ||
         code === "session_backend_unavailable" ||
+        code === "database_unavailable" ||
         code === "schema_mismatch" ||
+        code === "constraint_violation" ||
         code === "backend_unavailable"
       ) {
         this.patchConnection("idle");

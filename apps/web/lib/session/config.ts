@@ -38,6 +38,27 @@ export function isDurableSessionBackend(): boolean {
   return resolveSessionTransport() === SUPABASE_BACKEND;
 }
 
+export type SessionConfigurationPresence = {
+  supabaseUrl: boolean;
+  supabaseAnonKey: boolean;
+  serviceRoleKey: boolean;
+  sessionSigningSecret: boolean;
+};
+
+export function getSessionConfigurationPresence(
+  env: NodeJS.ProcessEnv = process.env,
+): SessionConfigurationPresence {
+  const publicConfig = readSupabasePublicEnv(env);
+  const secret = env.SESSION_SIGNING_SECRET?.trim() ?? "";
+  return {
+    supabaseUrl: Boolean(publicConfig?.url),
+    supabaseAnonKey: Boolean(publicConfig?.anonKey),
+    serviceRoleKey: Boolean(env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+    sessionSigningSecret:
+      Boolean(secret) && Buffer.byteLength(secret, "utf8") >= SESSION_SIGNING_SECRET_MIN_BYTES,
+  };
+}
+
 export function listSessionConfigIssues(
   env: NodeJS.ProcessEnv = process.env,
 ): SessionConfigIssue[] {

@@ -13,6 +13,9 @@ export const SAFE_SESSION_ERROR_MESSAGES: Record<SessionErrorCode, string> = {
   server_misconfigured: "Session service is not configured on the server.",
   session_backend_unavailable: "Session service is temporarily unavailable.",
   schema_mismatch: "Session database schema is out of date.",
+  constraint_violation: "Session database rejected the request.",
+  database_unavailable: "Session database is temporarily unavailable.",
+  configuration_error: "Session service is not configured on the server.",
 };
 
 export function safeMessageForCode(code: SessionErrorCode): string {
