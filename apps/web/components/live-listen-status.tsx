@@ -1,20 +1,32 @@
 "use client";
 
 import type { LiveListenEngineStatus } from "@prism/audio-engine";
+import type { Ref } from "react";
 
 type LiveListenStatusPanelProps = {
   status: LiveListenEngineStatus;
   errorMessage?: string;
+  /** True when microphone energy is above the local sound-detected threshold. */
+  hasSound?: boolean;
+  /** 0–1 input level for the controller meter. Prefer mutating the fill via meterFillRef. */
+  inputLevel?: number;
+  meterFillRef?: Ref<HTMLDivElement>;
   onRetry: () => void;
   onUseDemoTrack: () => void;
 };
 
-function copyForStatus(status: LiveListenEngineStatus, errorMessage?: string): string {
+function copyForStatus(
+  status: LiveListenEngineStatus,
+  hasSound: boolean,
+  errorMessage?: string,
+): string {
   switch (status) {
     case "requesting":
-      return "Waiting for microphone permission…";
+      return "Requesting microphone permission…";
     case "listening":
-      return "Live Listen is analyzing this device’s microphone locally. Audio is not recorded or sent.";
+      return hasSound
+        ? "Listening — sound detected. Analysis stays on this device; audio is not recorded or sent."
+        : "Listening — waiting for sound.";
     case "paused":
       return "Live Listen is paused. The microphone is no longer being analyzed.";
     case "inactive":
@@ -41,6 +53,9 @@ function copyForStatus(status: LiveListenEngineStatus, errorMessage?: string): s
 export function LiveListenStatusPanel({
   status,
   errorMessage,
+  hasSound = false,
+  inputLevel = 0,
+  meterFillRef,
   onRetry,
   onUseDemoTrack,
 }: LiveListenStatusPanelProps) {
@@ -61,6 +76,10 @@ export function LiveListenStatusPanel({
     status === "inactive" ||
     status === "error";
 
+  const detail =
+    status === "listening" ? (hasSound ? "sound" : "waiting") : status;
+  const clamped = Math.min(1, Math.max(0, inputLevel));
+
   return (
     <div
       className={
@@ -73,8 +92,29 @@ export function LiveListenStatusPanel({
       role={isAlert ? "alert" : "status"}
       data-testid="live-listen-status"
       data-live-listen-status={status}
+      data-live-listen-detail={detail}
     >
-      <p className="max-w-md text-center text-prism-foam">{copyForStatus(status, errorMessage)}</p>
+      <p className="max-w-md text-center text-prism-foam">
+        {copyForStatus(status, hasSound, errorMessage)}
+      </p>
+      {status === "listening" ? (
+        <div
+          className="mx-auto mt-2 h-1.5 w-40 max-w-full overflow-hidden rounded-full bg-prism-slate/80"
+          role="meter"
+          aria-label="Microphone input level"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(clamped * 100)}
+          data-testid="live-listen-meter"
+        >
+          <div
+            ref={meterFillRef}
+            className="h-full origin-left bg-prism-aurora"
+            style={{ transform: `scaleX(${clamped})` }}
+            data-testid="live-listen-meter-fill"
+          />
+        </div>
+      ) : null}
       {isAlert ? (
         <div className="flex flex-wrap justify-center gap-3">
           <button type="button" className="prism-btn prism-btn-primary" onClick={onRetry}>

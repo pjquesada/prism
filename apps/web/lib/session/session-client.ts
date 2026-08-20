@@ -10,6 +10,8 @@ import {
   publicGuestIdentitySchema,
   sessionMessageSchema,
 } from "@prism/contracts";
+import { acquireResource, getResourceCounts } from "@prism/audio-engine";
+import { noteFeatureMessage, registerPerfResourceSource } from "@prism/visual-engine";
 import {
   HEARTBEAT_INTERVAL_MS,
   PING_INTERVAL_MS,
@@ -26,6 +28,16 @@ import { createOptionalBrowserSupabase } from "@/lib/supabase/browser";
 
 const RESTORE_TIMEOUT_MS = 12_000;
 const CONNECT_TIMEOUT_MS = 15_000;
+const SNAPSHOT_POLL_INTERVAL_MS = 10_000;
+/** Skip snapshot polling while SSE/Supabase delivered a message this recently. */
+export const REALTIME_HEALTHY_MS = 8_000;
+
+registerPerfResourceSource(getResourceCounts);
+
+export function shouldPollSnapshot(lastRealtimeEventAt: number, nowMs = Date.now()): boolean {
+  if (lastRealtimeEventAt <= 0) return true;
+  return nowMs - lastRealtimeEventAt >= REALTIME_HEALTHY_MS;
+}
 
 type CreateHandlers = {
   onState: (state: SyncEngineState) => void;
@@ -70,6 +82,8 @@ export class SessionClient {
   private featureInFlight: Promise<void> | null = null;
   private pendingFeature: AudioFeatureEnvelope | null = null;
   private transport: "memory" | "supabase" | null = null;
+  private lastRealtimeEventAt = 0;
+  private realtimeRelease: (() => void) | null = null;
 
   constructor(handlers: CreateHandlers) {
     this.state = createSyncEngineState();
@@ -384,6 +398,7 @@ export class SessionClient {
     if (this.realtimeStartedFor === this.identity.sessionId) return;
     this.stopRealtime();
     this.realtimeStartedFor = this.identity.sessionId;
+    this.realtimeRelease = acquireResource("realtimeSubscriptions");
     if (this.transport !== "supabase") {
       this.startEventSource(this.identity.sessionId);
     }
@@ -394,6 +409,8 @@ export class SessionClient {
 
   private stopRealtime(): void {
     this.realtimeStartedFor = null;
+    this.realtimeRelease?.();
+    this.realtimeRelease = null;
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
@@ -412,7 +429,7 @@ export class SessionClient {
     this.eventSource = source;
     const onPayload = (event: MessageEvent<string>) => {
       try {
-        this.applyRaw(JSON.parse(event.data) as unknown);
+        this.applyRaw(JSON.parse(event.data) as unknown, "realtime");
       } catch {
         // ignore malformed SSE
       }
@@ -437,7 +454,7 @@ export class SessionClient {
         event && typeof event === "object" && "payload" in event
           ? (event as { payload?: unknown }).payload
           : event;
-      this.applyRaw(payload);
+      this.applyRaw(payload, "realtime");
     });
     void channel.subscribe();
     this.supabaseChannel = {
@@ -448,6 +465,7 @@ export class SessionClient {
   }
 
   private emitFeature(envelope: AudioFeatureEnvelope): void {
+    noteFeatureMessage();
     for (const listener of this.featureListeners) {
       listener(envelope);
     }
@@ -490,8 +508,9 @@ export class SessionClient {
     if (this.pollTimer) clearInterval(this.pollTimer);
 
     this.pollTimer = setInterval(() => {
+      if (!shouldPollSnapshot(this.lastRealtimeEventAt)) return;
       void this.requestSnapshot();
-    }, 1_000);
+    }, SNAPSHOT_POLL_INTERVAL_MS);
 
     this.heartbeatTimer = setInterval(() => {
       if (!this.identity) return;
@@ -534,7 +553,10 @@ export class SessionClient {
     }, PING_INTERVAL_MS);
   }
 
-  private applyRaw(raw: unknown): { requestSnapshot: boolean } {
+  private applyRaw(raw: unknown, source: "local" | "realtime" = "local"): { requestSnapshot: boolean } {
+    if (source === "realtime") {
+      this.lastRealtimeEventAt = Date.now();
+    }
     const parsed = sessionMessageSchema.safeParse(raw);
     if (parsed.success && parsed.data.type === "audio.features") {
       this.emitFeature(parsed.data.payload);

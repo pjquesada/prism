@@ -6,11 +6,16 @@ export type LiveListenFailure = {
   message: string;
 };
 
+/**
+ * Analysis-oriented constraints. Noise suppression flattens visualization energy;
+ * echo cancellation is unnecessary because the mic graph never reaches speakers.
+ */
 export const LIVE_LISTEN_AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
+    echoCancellation: false,
+    noiseSuppression: false,
     autoGainControl: true,
+    channelCount: 1,
   },
   video: false,
 };

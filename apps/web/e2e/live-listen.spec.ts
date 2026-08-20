@@ -52,12 +52,24 @@ test.describe("Phase 1E Live Listen", () => {
       });
     });
     await displayContext.addInitScript(() => {
-      Object.defineProperty(window, "__prismGumCalls", { configurable: true, value: 0 });
+      const target = window as unknown as {
+        __prismGumCalls: number;
+        __prismAudioElements: number;
+      };
+      target.__prismGumCalls = 0;
+      target.__prismAudioElements = 0;
+      const OriginalAudio = window.Audio;
+      function PatchedAudio(src?: string) {
+        target.__prismAudioElements += 1;
+        return src ? new OriginalAudio(src) : new OriginalAudio();
+      }
+      PatchedAudio.prototype = OriginalAudio.prototype;
+      Object.defineProperty(window, "Audio", { configurable: true, value: PatchedAudio });
       Object.defineProperty(navigator, "mediaDevices", {
         configurable: true,
         value: {
           getUserMedia: async () => {
-            (window as unknown as { __prismGumCalls: number }).__prismGumCalls += 1;
+            target.__prismGumCalls += 1;
             throw new Error("display must not request a microphone");
           },
         },
@@ -77,24 +89,34 @@ test.describe("Phase 1E Live Listen", () => {
     await display.getByTestId("join-code-input").fill(pairingCode!);
     await display.getByRole("button", { name: /Join as display/i }).click();
     await expect(display.getByTestId("display-visualizer")).toBeVisible({ timeout: 15_000 });
+    await expect(display.getByTestId("display-silent")).toBeVisible();
+    await expect(display.getByRole("button", { name: /Enable audio on this display/i })).toHaveCount(
+      0,
+    );
 
-    const featureBroadcast = controller.waitForRequest((req) => {
+    const demoBroadcast = controller.waitForRequest((req) => {
       if (req.method() !== "POST" || !req.url().includes("/broadcast")) return false;
       const data = req.postData() ?? "";
       return (
         data.includes("audio.features") && data.includes("levels") && !data.includes('"bands"')
       );
     });
-    await controller.getByTestId("audio-mode-live_listen").click();
-    const request = await featureBroadcast;
-    expect(request.postData() ?? "").not.toMatch(/pcm|fft|microphone|MediaStream|frequencyData/);
-
-    await expect(display.getByTestId("live-listen-follower")).toBeVisible({ timeout: 15_000 });
+    await controller.getByRole("button", { name: /^Play$/i }).click();
+    const demoRequest = await demoBroadcast;
+    expect(demoRequest.postData() ?? "").not.toMatch(/pcm|fft|microphone|MediaStream|frequencyData/);
     await expect(display.getByTestId("remote-feature-energy")).toBeVisible({ timeout: 15_000 });
+
+    await controller.getByTestId("audio-mode-live_listen").click();
+    await expect(display.getByTestId("live-listen-follower")).toBeVisible({ timeout: 15_000 });
+    await expect(controller.getByTestId("live-listen-status")).toBeVisible({ timeout: 15_000 });
     const gumCalls = await display.evaluate(
       () => (window as unknown as { __prismGumCalls: number }).__prismGumCalls,
     );
+    const audioElements = await display.evaluate(
+      () => (window as unknown as { __prismAudioElements: number }).__prismAudioElements,
+    );
     expect(gumCalls).toBe(0);
+    expect(audioElements).toBe(0);
 
     await controller.getByTestId("audio-mode-demo_track").click();
     await expect(controller.getByTestId("audio-mode-demo_track")).toHaveAttribute(

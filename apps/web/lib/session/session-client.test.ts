@@ -55,3 +55,12 @@ describe("SessionClient restore errors", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("SessionClient snapshot polling", () => {
+  it("skips polling while realtime is healthy", async () => {
+    const { shouldPollSnapshot, REALTIME_HEALTHY_MS } = await import("./session-client");
+    expect(shouldPollSnapshot(0, 1_000)).toBe(true);
+    expect(shouldPollSnapshot(1_000, 1_000 + REALTIME_HEALTHY_MS - 1)).toBe(false);
+    expect(shouldPollSnapshot(1_000, 1_000 + REALTIME_HEALTHY_MS)).toBe(true);
+  });
+});

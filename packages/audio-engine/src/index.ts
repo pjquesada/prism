@@ -19,6 +19,7 @@ export {
 } from "./demo-track-engine.js";
 export {
   LiveListenEngine,
+  LIVE_LISTEN_SOUND_THRESHOLD,
   type LiveListenEngineListener,
   type LiveListenEngineOptions,
   type LiveListenEngineStatus,
@@ -28,6 +29,13 @@ export {
   silentRemoteEnvelope,
   type RemoteFeatureIngestResult,
 } from "./remote-features.js";
+export {
+  acquireResource,
+  getResourceCounts,
+  resetResourceCountsForTests,
+  type PrismResourceCounts,
+  type PrismResourceKind,
+} from "./runtime-resources.js";
 export {
   LIVE_LISTEN_AUDIO_CONSTRAINTS,
   canRequestMicrophone,

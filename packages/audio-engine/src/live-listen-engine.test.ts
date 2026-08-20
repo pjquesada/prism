@@ -66,6 +66,7 @@ describe("LiveListenEngine", () => {
     expect(getUserMedia).toHaveBeenCalledWith(LIVE_LISTEN_AUDIO_CONSTRAINTS);
     expect(context.source.connect).toHaveBeenCalledWith(context.analyser);
     expect(context.analyser.connect).not.toHaveBeenCalled();
+    expect(context.analyser.smoothingTimeConstant).toBe(0.35);
     expect(JSON.stringify(engine.getFrame())).not.toMatch(/pcm|microphone|MediaStream/);
 
     await engine.dispose();
@@ -199,6 +200,22 @@ describe("LiveListenEngine", () => {
     expect(engine.getStatus()).toBe("paused");
     await engine.start();
     expect(engine.getStatus()).toBe("listening");
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    await engine.dispose();
+  });
+
+  it("does not request a microphone until start() runs after a caller gesture", async () => {
+    const getUserMedia = vi.fn(async () => createFakeStream().stream);
+    const engine = new LiveListenEngine({
+      getUserMedia,
+      createContext: () => createFakeContext() as unknown as AudioContext,
+      isSecureContext: () => true,
+      requestAnimationFrame: () => 1,
+      cancelAnimationFrame: vi.fn(),
+    });
+    expect(engine.getStatus()).toBe("idle");
+    expect(getUserMedia).not.toHaveBeenCalled();
+    await engine.start();
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     await engine.dispose();
   });

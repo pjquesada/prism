@@ -16,18 +16,14 @@ import {
 } from "@prism/contracts";
 import {
   DemoTrackEngine,
+  LIVE_LISTEN_SOUND_THRESHOLD,
   RemoteFeatureInterpolator,
   type LiveListenEngine,
   type LiveListenEngineStatus,
 } from "@prism/audio-engine";
-import { VisualizerCanvas } from "@prism/visual-engine";
+import { VisualizerCanvas, noteDroppedOrStaleFrame } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
-import {
-  applyDisplayModeParams,
-  correctPlaybackDrift,
-  displayDeviceIndex,
-  type SyncEngineState,
-} from "@prism/sync-engine";
+import { applyDisplayModeParams, displayDeviceIndex, type SyncEngineState } from "@prism/sync-engine";
 
 import { LiveListenStatusPanel } from "@/components/live-listen-status";
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
@@ -39,7 +35,7 @@ const LIVE_LISTEN_PRIVACY =
 
 type SessionVisualizerStageProps = {
   sync: SyncEngineState;
-  /** When true, this device owns Demo Track / Live Listen analysis. */
+  /** When true, this device owns Demo Track / Live Listen analysis and audio output. */
   isAudioAuthority: boolean;
   onPlaybackAnchor?: (playback: PlaybackState) => void;
   className?: string;
@@ -50,6 +46,20 @@ type SessionVisualizerStageProps = {
   publishFeatures?: (envelope: AudioFeatureEnvelope) => void;
   onStartLiveListen?: () => void;
 };
+
+function writeRemoteEnergy(el: HTMLElement | null, energy: number): void {
+  if (!el) return;
+  el.dataset.energy = energy.toFixed(3);
+  el.textContent = `Remote energy ${energy.toFixed(2)}`;
+}
+
+function writeMeter(el: HTMLElement | null, energy: number): void {
+  if (!el) return;
+  const clamped = Math.min(1, Math.max(0, energy));
+  el.style.transform = `scaleX(${clamped})`;
+  const meter = el.parentElement;
+  if (meter) meter.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
+}
 
 export function SessionVisualizerStage({
   sync,
@@ -66,16 +76,34 @@ export function SessionVisualizerStage({
   const engineRef = useRef<DemoTrackEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(createSilentFeatureFrame());
   const interpolatorRef = useRef(new RemoteFeatureInterpolator());
-  const remoteRafRef = useRef<number | null>(null);
   const frameSeqRef = useRef(0);
   const lastPublishMsRef = useRef(0);
+  const lastAnchorRef = useRef(0);
+  const lastDemoStatusRef = useRef<string>("idle");
+  const lastLiveStatusRef = useRef<LiveListenEngineStatus>("idle");
+  const lastHasSoundRef = useRef(false);
+  const remoteEnergyElRef = useRef<HTMLSpanElement | null>(null);
+  const meterFillRef = useRef<HTMLDivElement | null>(null);
+  const publishFeaturesRef = useRef(publishFeatures);
+  publishFeaturesRef.current = publishFeatures;
+  const isAudioAuthorityRef = useRef(isAudioAuthority);
+  isAudioAuthorityRef.current = isAudioAuthority;
+  const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
+    const publish = publishFeaturesRef.current;
+    if (!isAudioAuthorityRef.current || !publish) return;
+    const now = Date.now();
+    if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
+    lastPublishMsRef.current = now;
+    frameSeqRef.current += 1;
+    publish(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
+  });
+
   const [engineReady, setEngineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsGesture, setNeedsGesture] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
   const [liveError, setLiveError] = useState<string | undefined>();
-  const [remoteEnergy, setRemoteEnergy] = useState(0);
-  const lastAnchorRef = useRef(0);
+  const [hasSound, setHasSound] = useState(false);
 
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
   const visualizerId: VisualizerId =
@@ -83,9 +111,9 @@ export function SessionVisualizerStage({
   const quality: QualityTier = preset?.qualityTier ?? "high";
   const audioMode = snapshot?.playback.audioMode ?? "demo_track";
   const liveListen = audioMode === "live_listen";
+  const isPlaying = snapshot?.playback.isPlaying ?? false;
   const sessionId = snapshot?.session.id;
-  const followerSilent = liveListen && !isAudioAuthority;
-  const ready = followerSilent || engineReady || liveStatus === "listening";
+  const ready = !isAudioAuthority || engineReady || liveStatus === "listening" || liveStatus === "requesting";
   const deviceIndex = snapshot ? displayDeviceIndex(snapshot.devices, sync.localDeviceId ?? "") : 0;
   const params = useMemo(() => {
     const base = parseVisualizerParams(
@@ -98,23 +126,30 @@ export function SessionVisualizerStage({
   const plugin = useMemo(() => requireVisualizerPlugin(visualizerId), [visualizerId]);
 
   useEffect(() => {
-    if (!sessionId || liveListen) {
+    if (!sessionId || liveListen || !isAudioAuthority) {
       engineRef.current = null;
       return;
     }
     const engine = new DemoTrackEngine({ trackUrl: DEMO_TRACK_URL, loop: true });
     engineRef.current = engine;
+    lastDemoStatusRef.current = "idle";
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
-      setEngineReady(
-        event.status === "ready" ||
-          event.status === "playing" ||
-          event.status === "paused" ||
-          event.status === "needs_gesture",
-      );
-      setNeedsGesture(event.status === "needs_gesture");
-      if (event.status === "error") setError(event.errorMessage ?? "Audio error");
-      if (event.status === "unsupported") setError("Web Audio unsupported");
+      if (event.status !== lastDemoStatusRef.current) {
+        lastDemoStatusRef.current = event.status;
+        setEngineReady(
+          event.status === "ready" ||
+            event.status === "playing" ||
+            event.status === "paused" ||
+            event.status === "needs_gesture",
+        );
+        setNeedsGesture(event.status === "needs_gesture");
+        if (event.status === "error") setError(event.errorMessage ?? "Audio error");
+        if (event.status === "unsupported") setError("Web Audio unsupported");
+      }
+      if (event.status === "playing") {
+        maybePublishRef.current(event.frame);
+      }
     });
     void engine.prepare();
     return () => {
@@ -122,71 +157,66 @@ export function SessionVisualizerStage({
       void engine.dispose();
       engineRef.current = null;
     };
-  }, [liveListen, sessionId]);
+  }, [liveListen, sessionId, isAudioAuthority]);
 
   useEffect(() => {
     if (!sessionId || !liveListen || !isAudioAuthority || !liveListenEngine) return;
     const engine = liveListenEngine;
+    lastLiveStatusRef.current = engine.getStatus();
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
-      setLiveStatus(event.status);
-      setLiveError(event.errorMessage);
-      setEngineReady(
-        event.status === "listening" || event.status === "paused" || event.status === "requesting",
-      );
-      setNeedsGesture(event.status === "idle" || event.status === "inactive");
-      if (event.status !== "listening" || !publishFeatures) return;
-      const now = Date.now();
-      if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
-      lastPublishMsRef.current = now;
-      frameSeqRef.current += 1;
-      const envelope = audioFeatureFrameToEnvelope(event.frame, frameSeqRef.current, now);
-      publishFeatures(envelope);
+      writeMeter(meterFillRef.current, event.frame.energy);
+      const detected = event.frame.energy >= LIVE_LISTEN_SOUND_THRESHOLD;
+      if (detected !== lastHasSoundRef.current) {
+        lastHasSoundRef.current = detected;
+        setHasSound(detected);
+      }
+      if (event.status !== lastLiveStatusRef.current) {
+        lastLiveStatusRef.current = event.status;
+        setLiveStatus(event.status);
+        setLiveError(event.errorMessage);
+        setEngineReady(
+          event.status === "listening" || event.status === "paused" || event.status === "requesting",
+        );
+        setNeedsGesture(event.status === "idle" || event.status === "inactive");
+      }
+      if (event.status === "listening") {
+        maybePublishRef.current(event.frame);
+      }
     });
     return () => {
       unsubscribe();
     };
-  }, [liveListen, isAudioAuthority, sessionId, liveListenEngine, publishFeatures]);
+  }, [liveListen, isAudioAuthority, sessionId, liveListenEngine]);
 
   useEffect(() => {
     const interpolator = interpolatorRef.current;
-    if (!liveListen || isAudioAuthority || !subscribeFeatures) {
+    if (isAudioAuthority || !subscribeFeatures) {
       interpolator.reset();
-      if (remoteRafRef.current !== null && typeof window !== "undefined") {
-        window.cancelAnimationFrame(remoteRafRef.current);
-        remoteRafRef.current = null;
-      }
       return;
     }
     featuresRef.current = createSilentFeatureFrame();
     const unsubscribe = subscribeFeatures((envelope) => {
-      interpolator.ingest(envelope, Date.now());
+      const result = interpolator.ingest(envelope, Date.now());
+      if (!result.ok) {
+        noteDroppedOrStaleFrame();
+        return;
+      }
+      writeRemoteEnergy(remoteEnergyElRef.current, interpolator.sample(Date.now()).energy);
     });
-    const tick = () => {
-      remoteRafRef.current = window.requestAnimationFrame(tick);
-      const frame = interpolator.sample(Date.now());
-      featuresRef.current = frame;
-      setRemoteEnergy(frame.energy);
-    };
-    remoteRafRef.current = window.requestAnimationFrame(tick);
     return () => {
       unsubscribe();
-      if (remoteRafRef.current !== null) {
-        window.cancelAnimationFrame(remoteRafRef.current);
-        remoteRafRef.current = null;
-      }
       interpolator.reset();
     };
-  }, [liveListen, isAudioAuthority, subscribeFeatures]);
+  }, [isAudioAuthority, subscribeFeatures]);
 
   useEffect(() => {
-    const playback = snapshot?.playback;
-    if (!playback) return;
+    if (!isAudioAuthority) return;
 
     if (liveListen) {
       const live = liveListenEngine;
-      if (!isAudioAuthority || !live) return;
-      if (playback.isPlaying) {
+      if (!live) return;
+      if (isPlaying) {
         if (live.getStatus() === "paused") void live.start();
       } else if (live.getStatus() === "listening") {
         void live.pause();
@@ -196,34 +226,9 @@ export function SessionVisualizerStage({
 
     const engine = engineRef.current;
     if (!engine) return;
-
-    if (isAudioAuthority) {
-      if (playback.isPlaying) void engine.play();
-      else void engine.pause();
-      return;
-    }
-
-    const correction = correctPlaybackDrift({
-      playback,
-      localPositionMs: engine.getPositionMs(),
-      sessionNowMs: Date.now() + sync.clock.offsetMs,
-    });
-
-    if (playback.isPlaying) {
-      void engine.play();
-      if (correction.correction === "seek") {
-        engine.setPositionMs(correction.positionMs);
-        engine.setPlaybackRate(playback.rate);
-      } else if (correction.correction === "nudge") {
-        engine.setPlaybackRate(correction.suggestedRate);
-      } else {
-        engine.setPlaybackRate(playback.rate);
-      }
-    } else {
-      void engine.pause();
-      engine.setPositionMs(playback.positionMs);
-    }
-  }, [snapshot?.playback, isAudioAuthority, sync.clock.offsetMs, liveListen, liveListenEngine]);
+    if (isPlaying) void engine.play();
+    else void engine.pause();
+  }, [isAudioAuthority, isPlaying, liveListen, liveListenEngine]);
 
   useEffect(() => {
     if (!isAudioAuthority || !onPlaybackAnchor || !snapshot) return;
@@ -278,8 +283,22 @@ export function SessionVisualizerStage({
     !liveListenEngine &&
     (liveStatus === "idle" || liveStatus === "inactive" || liveStatus === "paused");
 
+  const resolveFeatures = !isAudioAuthority
+    ? (nowMs: number) => {
+        const frame = interpolatorRef.current.sample(nowMs);
+        featuresRef.current = frame;
+        writeRemoteEnergy(remoteEnergyElRef.current, frame.energy);
+        return frame;
+      }
+    : undefined;
+
   return (
-    <div className={["flex min-h-0 flex-1 flex-col", className].filter(Boolean).join(" ")}>
+    <div
+      className={["flex min-h-0 flex-1 flex-col", className].filter(Boolean).join(" ")}
+      data-testid="session-visualizer-stage"
+      data-audio-authority={isAudioAuthority ? "true" : "false"}
+      data-audio-output={isAudioAuthority ? "local" : "silent"}
+    >
       {!ready && !error && !liveListen ? (
         <p className="mb-3 text-sm text-prism-mist" role="status">
           Loading visualizer…
@@ -290,13 +309,13 @@ export function SessionVisualizerStage({
           {error}
         </p>
       ) : null}
-      {needsGesture && !liveListen ? (
+      {needsGesture && isAudioAuthority && !liveListen ? (
         <button
           type="button"
           className="prism-btn prism-btn-primary mb-3"
           onClick={() => void engineRef.current?.play()}
         >
-          Enable audio on this display
+          Start Demo Track
         </button>
       ) : null}
       {showEnableMic ? (
@@ -314,14 +333,15 @@ export function SessionVisualizerStage({
           {LIVE_LISTEN_PRIVACY}
         </p>
       ) : null}
-      {liveListen && !isAudioAuthority ? (
+      {!isAudioAuthority ? (
         <p
           className="mb-3 text-sm text-prism-mist"
           role="status"
-          data-testid="live-listen-follower"
+          data-testid={liveListen ? "live-listen-follower" : "display-silent"}
         >
-          Controller is using Live Listen. This display never asks for a microphone — it follows
-          anonymous visualization levels only.
+          {liveListen
+            ? "Controller is using Live Listen. This display never asks for a microphone — it follows anonymous visualization levels only."
+            : "This display is silent. Visualization follows the controller; Demo Track audio plays only there."}
         </p>
       ) : null}
       <VisualizerStageFrame
@@ -333,6 +353,8 @@ export function SessionVisualizerStage({
           <LiveListenStatusPanel
             status={liveStatus}
             errorMessage={liveError}
+            hasSound={hasSound}
+            meterFillRef={meterFillRef}
             onRetry={() => {
               if (liveListenEngine) {
                 void liveListenEngine.start();
@@ -353,18 +375,20 @@ export function SessionVisualizerStage({
         <VisualizerCanvas
           plugin={plugin}
           featuresRef={featuresRef}
+          resolveFeatures={resolveFeatures}
           quality={quality}
           params={params}
           albumArtUrl={visualizerId === "album_world" ? PLACEHOLDER_ARTWORK_PATH : null}
         />
-        {liveListen && !isAudioAuthority ? (
+        {!isAudioAuthority ? (
           <span
+            ref={remoteEnergyElRef}
             className="sr-only"
             data-testid="remote-feature-energy"
-            data-energy={remoteEnergy.toFixed(3)}
+            data-energy="0.000"
             data-feature-source="remote"
           >
-            Remote energy {remoteEnergy.toFixed(2)}
+            Remote energy 0.00
           </span>
         ) : null}
       </VisualizerStageFrame>
