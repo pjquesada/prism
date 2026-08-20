@@ -33,7 +33,9 @@ describe("RemoteFeatureInterpolator", () => {
     const interp = new RemoteFeatureInterpolator();
     const now = 2_000_000;
     interp.ingest({ ...createSilentFeatureEnvelope(1, now), energy: 1, rms: 1, bass: 1 }, now);
-    const live = interp.sample(now + 20);
+    interp.sample(now + 16);
+    interp.sample(now + 32);
+    const live = interp.sample(now + 48);
     expect(live.energy).toBeGreaterThan(0.4);
     const decayed = interp.sample(now + 900);
     expect(decayed.energy).toBeLessThan(0.05);
