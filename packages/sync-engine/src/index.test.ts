@@ -219,6 +219,75 @@ describe("sync-engine reducer", () => {
     expect(stale.applied).toBe(false);
     expect(stale.state.snapshot?.preset.visualizerId).toBe("particles");
   });
+
+  it("applies audio.features without advancing session seq", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const now = new Date().toISOString();
+    let state = createSyncEngineState("display-1");
+    state = applySessionMessage(state, {
+      type: "session.snapshot",
+      seq: 4,
+      sentAt: now,
+      sessionId,
+      deviceId: "display-1",
+      payload: {
+        session: {
+          id: sessionId,
+          hostDeviceId: "controller-1",
+          status: "active",
+          displayMode: "mirror",
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: now,
+          closedAt: null,
+          seq: 4,
+        },
+        devices: [],
+        playback: {
+          audioMode: "live_listen",
+          isPlaying: true,
+          positionMs: 0,
+          rate: 1,
+          trackId: "live-listen",
+          updatedAt: now,
+          seq: 4,
+        },
+        preset: {
+          visualizerId: "spectrum",
+          qualityTier: "high",
+          presetId: null,
+          params: {},
+          updatedAt: now,
+          seq: 4,
+        },
+      },
+    }).state;
+    const lastSeq = state.seq.lastAppliedSeq;
+    const features = applySessionMessage(state, {
+      type: "audio.features",
+      seq: 99,
+      sentAt: now,
+      sessionId,
+      deviceId: "controller-1",
+      payload: {
+        frameSeq: 3,
+        timestampMs: Date.now(),
+        rms: 0.2,
+        energy: 0.4,
+        bass: 0.1,
+        mid: 0.1,
+        high: 0.1,
+        levels: [0, 0, 0, 0, 0, 0, 0, 0],
+        onset: false,
+        beatStrength: 0,
+        centroid: 0,
+      },
+    });
+    expect(features.applied).toBe(true);
+    expect(features.requestSnapshot).toBe(false);
+    expect(features.state.seq.lastAppliedSeq).toBe(lastSeq);
+    expect(features.state.snapshot?.preset.visualizerId).toBe("spectrum");
+  });
 });
 
 describe("sync-engine security + display", () => {
@@ -228,6 +297,21 @@ describe("sync-engine security + display", () => {
     expect(normalizePairingCodeInput(" ab-c12 ")).toBe("ABC12");
     expect(containsForbiddenPayloadKeys({ features: { bands: [1, 2] } })).toBe("features.bands");
     expect(containsForbiddenPayloadKeys({ visualizerId: "spectrum" })).toBeNull();
+    expect(
+      containsForbiddenPayloadKeys({
+        frameSeq: 1,
+        levels: [0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+        energy: 0.2,
+      }),
+    ).toBeNull();
+    expect(containsForbiddenPayloadKeys({ fft: [1, 2, 3] })).toBe("fft");
+    expect(containsForbiddenPayloadKeys({ pcm: "nope" })).toBe("pcm");
+    expect(
+      containsForbiddenPayloadKeys({
+        type: "audio.features",
+        payload: { energy: 0.2, levels: [0.1], pcm: [0] },
+      }),
+    ).toBe("payload.pcm");
   });
 
   it("throttles and offsets complementary params", () => {

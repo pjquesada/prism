@@ -8,6 +8,7 @@ import {
   type QualityTier,
   type VisualizerId,
 } from "./domain.js";
+import { audioFeatureEnvelopeSchema } from "./features.js";
 import { defaultParamsForVisualizer, parseVisualizerParams } from "./presets.js";
 
 /** Multi-display layout mode for session followers. */
@@ -165,6 +166,11 @@ export const sessionMessageSchema = z.discriminatedUnion("type", [
     payload: playbackStateSchema,
   }),
   z.object({
+    type: z.literal("audio.features"),
+    ...envelopeBase,
+    payload: audioFeatureEnvelopeSchema,
+  }),
+  z.object({
     type: z.literal("preset.apply"),
     ...envelopeBase,
     payload: activePresetSnapshotSchema,
@@ -262,6 +268,9 @@ export const FORBIDDEN_SESSION_PAYLOAD_KEYS = [
   "bands",
   "frequencyData",
   "timeDomainData",
+  "timeDomain",
+  "mediaStream",
+  "samples",
   "image",
   "imageData",
   "albumArt",

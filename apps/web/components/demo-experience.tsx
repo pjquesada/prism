@@ -25,6 +25,7 @@ import { requireVisualizerPlugin } from "@prism/visualizers";
 import { AudioModeSelector } from "@/components/audio-mode-selector";
 import { LiveListenStatusPanel } from "@/components/live-listen-status";
 import { VisualizerSelector } from "@/components/visualizer-selector";
+import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import {
   createBlankPreset,
   duplicatePreset,
@@ -83,6 +84,8 @@ function statusLabel(
         return "No microphone found";
       case "unsupported":
         return "Microphone is not available in this browser";
+      case "inactive":
+        return "Audio context is inactive — tap Live Listen again";
       case "error":
         return "Live Listen error";
       case "idle":
@@ -201,12 +204,21 @@ export function DemoExperience({
   }, [audioMode]);
 
   useEffect(() => {
-    if (audioMode !== "live_listen") {
+    return () => {
+      void liveEngineRef.current?.dispose();
       liveEngineRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (audioMode !== "live_listen") {
+      const existing = liveEngineRef.current;
+      liveEngineRef.current = null;
+      if (existing) void existing.dispose();
       return;
     }
-    const engine = new LiveListenEngine();
-    liveEngineRef.current = engine;
+    const engine = liveEngineRef.current;
+    if (!engine) return;
     let lastHud = 0;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
@@ -224,12 +236,8 @@ export function DemoExperience({
         });
       }
     });
-    void engine.start();
-
     return () => {
       unsubscribe();
-      void engine.dispose();
-      liveEngineRef.current = null;
     };
   }, [audioMode]);
 
@@ -337,6 +345,12 @@ export function DemoExperience({
         allowLiveListen={liveListenEnabled}
         onSelect={(mode) => {
           setErrorMessage(undefined);
+          if (mode === "live_listen") {
+            if (!liveEngineRef.current) {
+              liveEngineRef.current = new LiveListenEngine();
+            }
+            void liveEngineRef.current.start();
+          }
           setAudioMode(mode);
         }}
       />
@@ -378,8 +392,15 @@ export function DemoExperience({
         <span className="text-xs text-prism-mist/80">Effective: {effectiveQuality}</span>
       </div>
 
+      {audioMode === "live_listen" ? (
+        <p className="text-sm text-prism-mist" data-testid="live-listen-privacy">
+          Microphone audio stays on this device. Only anonymous visualization levels are shared with
+          your paired display.
+        </p>
+      ) : null}
+
       <div
-        className="relative min-h-[min(70vh,36rem)] flex-1 overflow-hidden rounded-sm border border-prism-slate bg-prism-deep/70"
+        className="relative flex min-h-[50dvh] flex-1 flex-col overflow-hidden"
         role="region"
         aria-label={`${plugin.label} visualizer`}
       >
@@ -437,23 +458,29 @@ export function DemoExperience({
           />
         ) : null}
 
-        <VisualizerCanvas
-          plugin={plugin}
-          featuresRef={featuresRef}
-          quality={canvasQuality}
-          adaptiveQuality={qualityMode === "auto"}
-          params={draftParams}
-          albumArtUrl={albumArtUrl}
-          onQualityChange={setEffectiveQuality}
-          className="h-full min-h-[min(70vh,36rem)] w-full"
-          fallback={
-            <div className="flex h-full min-h-[min(70vh,36rem)] items-center justify-center p-6">
-              <p className="max-w-md text-center text-prism-foam">
-                WebGL is unavailable. Audio can still play, but visualizers cannot render.
-              </p>
-            </div>
-          }
-        />
+        <VisualizerStageFrame
+          label={`${plugin.label} visualizer`}
+          immersive={false}
+          showFullscreen
+          className="min-h-[50dvh]"
+        >
+          <VisualizerCanvas
+            plugin={plugin}
+            featuresRef={featuresRef}
+            quality={canvasQuality}
+            adaptiveQuality={qualityMode === "auto"}
+            params={draftParams}
+            albumArtUrl={albumArtUrl}
+            onQualityChange={setEffectiveQuality}
+            fallback={
+              <div className="flex h-full items-center justify-center p-6">
+                <p className="max-w-md text-center text-prism-foam">
+                  WebGL is unavailable. Audio can still play, but visualizers cannot render.
+                </p>
+              </div>
+            }
+          />
+        </VisualizerStageFrame>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

@@ -49,26 +49,23 @@ export function assertSafeSessionPayload(payload: unknown): void {
 
 export function jsonError(code: string, message: string, status: number): Response {
   const known = code as SessionErrorCode;
-  const bodyMessage = (
-    [
-      "invalid_or_expired",
-      "rate_limited",
-      "unauthorized",
-      "ended",
-      "not_found",
-      "payload_too_large",
-      "forbidden_payload",
-      "backend_unavailable",
-      "server_misconfigured",
-      "session_backend_unavailable",
-      "schema_mismatch",
-      "constraint_violation",
-      "database_unavailable",
-      "configuration_error",
-    ] as const
-  ).includes(known as SessionErrorCode)
-    ? safeMessageForCode(known)
-    : message;
+  const knownCodes: SessionErrorCode[] = [
+    "invalid_or_expired",
+    "rate_limited",
+    "unauthorized",
+    "ended",
+    "not_found",
+    "payload_too_large",
+    "forbidden_payload",
+    "backend_unavailable",
+    "server_misconfigured",
+    "session_backend_unavailable",
+    "schema_mismatch",
+    "constraint_violation",
+    "database_unavailable",
+    "configuration_error",
+  ];
+  const bodyMessage = knownCodes.includes(known) ? safeMessageForCode(known) : message;
   return Response.json({ error: { code, message: bodyMessage } }, { status });
 }
 

@@ -290,6 +290,7 @@ export function applySessionMessage(state: SyncEngineState, raw: unknown): Apply
     case "heartbeat":
     case "snapshot.request":
     case "handoff.request":
+    case "audio.features":
       return { state: { ...state, seq: nextSeq }, applied: true, requestSnapshot: false };
     default: {
       const _exhaustive: never = message;

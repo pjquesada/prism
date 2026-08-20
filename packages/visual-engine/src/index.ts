@@ -22,3 +22,22 @@ export {
   VisualizerCanvas,
   type VisualizerCanvasProps,
 } from "./visualizer-canvas.js";
+export {
+  applyVisualizerResize,
+  computeBackingStoreSize,
+  fillCanvasElement,
+  measureCssSize,
+  observeElementSize,
+  MAX_VISUALIZER_DPR,
+  VISUALIZER_HOST_FILL_STYLE,
+  type BackingStoreSize,
+  type RendererResizeTarget,
+} from "./resize.js";
+export {
+  computeDisplayStageSize,
+  DISPLAY_VIEWPORTS,
+  stageFillsViewport,
+  type DisplayViewportName,
+  type SafeAreaInsets,
+  type ViewportBox,
+} from "./stage-layout.js";

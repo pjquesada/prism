@@ -1,10 +1,15 @@
 import type {
+  AudioFeatureEnvelope,
   DeviceRole,
   PublicGuestIdentity,
   SessionMessage,
   SessionSnapshot,
 } from "@prism/contracts";
-import { publicGuestIdentitySchema } from "@prism/contracts";
+import {
+  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
+  publicGuestIdentitySchema,
+  sessionMessageSchema,
+} from "@prism/contracts";
 import {
   HEARTBEAT_INTERVAL_MS,
   PING_INTERVAL_MS,
@@ -16,6 +21,8 @@ import {
   type ConnectionStatus,
   type SyncEngineState,
 } from "@prism/sync-engine";
+
+import { createOptionalBrowserSupabase } from "@/lib/supabase/browser";
 
 const RESTORE_TIMEOUT_MS = 12_000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -56,6 +63,13 @@ export class SessionClient {
   private disposed = false;
   private identity: PublicGuestIdentity | null = null;
   private snapshotInFlight = false;
+  private eventSource: EventSource | null = null;
+  private supabaseChannel: { unsubscribe: () => void } | null = null;
+  private realtimeStartedFor: string | null = null;
+  private readonly featureListeners = new Set<(envelope: AudioFeatureEnvelope) => void>();
+  private featureInFlight: Promise<void> | null = null;
+  private pendingFeature: AudioFeatureEnvelope | null = null;
+  private transport: "memory" | "supabase" | null = null;
 
   constructor(handlers: CreateHandlers) {
     this.state = createSyncEngineState();
@@ -127,7 +141,12 @@ export class SessionClient {
       payload: data.snapshot,
     });
     this.patchConnection("connected");
+    this.transport =
+      data?.transport === "supabase" || data?.transport === "memory"
+        ? data.transport
+        : this.transport;
     this.startTimers();
+    this.startRealtime();
     return data;
   }
 
@@ -168,7 +187,12 @@ export class SessionClient {
       payload: data.snapshot,
     });
     this.patchConnection("connected");
+    this.transport =
+      data?.transport === "supabase" || data?.transport === "memory"
+        ? data.transport
+        : this.transport;
     this.startTimers();
+    this.startRealtime();
     return data;
   }
 
@@ -209,8 +233,13 @@ export class SessionClient {
       };
       this.state = setLocalIdentity(this.state, { deviceId, role });
       this.applySnapshotPayload(data.snapshot, deviceId);
+      this.transport =
+        data?.transport === "supabase" || data?.transport === "memory"
+          ? data.transport
+          : this.transport;
       this.patchConnection("connected");
       this.startTimers();
+      this.startRealtime();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         this.patchConnection("error");
@@ -280,6 +309,22 @@ export class SessionClient {
     }
   }
 
+  subscribeFeatures(listener: (envelope: AudioFeatureEnvelope) => void): () => void {
+    this.featureListeners.add(listener);
+    return () => {
+      this.featureListeners.delete(listener);
+    };
+  }
+
+  publishFeatures(envelope: AudioFeatureEnvelope): void {
+    if (!this.identity) return;
+    this.pendingFeature = envelope;
+    if (this.featureInFlight) return;
+    this.featureInFlight = this.flushFeaturePublish().finally(() => {
+      this.featureInFlight = null;
+    });
+  }
+
   async end(): Promise<void> {
     if (!this.identity) return;
     await fetch(`/api/session/${this.identity.sessionId}/end`, {
@@ -308,9 +353,104 @@ export class SessionClient {
   dispose(): void {
     this.disposed = true;
     this.clearConnectWatch();
+    this.stopRealtime();
+    this.featureListeners.clear();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
+  }
+
+  private async flushFeaturePublish(): Promise<void> {
+    while (this.pendingFeature && this.identity && !this.disposed) {
+      const envelope = this.pendingFeature;
+      this.pendingFeature = null;
+      const encoded = new TextEncoder().encode(JSON.stringify(envelope));
+      if (encoded.byteLength > AUDIO_FEATURE_ENVELOPE_MAX_BYTES) continue;
+      try {
+        await this.publish({
+          type: "audio.features",
+          sessionId: this.identity.sessionId,
+          deviceId: this.identity.deviceId,
+          payload: envelope,
+        });
+      } catch {
+        break;
+      }
+    }
+  }
+
+  private startRealtime(): void {
+    if (!this.identity || this.disposed) return;
+    if (this.realtimeStartedFor === this.identity.sessionId) return;
+    this.stopRealtime();
+    this.realtimeStartedFor = this.identity.sessionId;
+    if (this.transport !== "supabase") {
+      this.startEventSource(this.identity.sessionId);
+    }
+    if (this.transport === "supabase") {
+      this.startSupabaseChannel(this.identity.sessionId);
+    }
+  }
+
+  private stopRealtime(): void {
+    this.realtimeStartedFor = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    if (this.supabaseChannel) {
+      this.supabaseChannel.unsubscribe();
+      this.supabaseChannel = null;
+    }
+  }
+
+  private startEventSource(sessionId: string): void {
+    if (typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/session/${sessionId}/events`, {
+      withCredentials: true,
+    });
+    this.eventSource = source;
+    const onPayload = (event: MessageEvent<string>) => {
+      try {
+        this.applyRaw(JSON.parse(event.data) as unknown);
+      } catch {
+        // ignore malformed SSE
+      }
+    };
+    source.addEventListener("message", onPayload);
+    source.addEventListener("snapshot", onPayload);
+    source.onerror = () => {
+      if (this.disposed) return;
+      if (this.transport === "supabase") {
+        source.close();
+        this.eventSource = null;
+      }
+    };
+  }
+
+  private startSupabaseChannel(sessionId: string): void {
+    const supabase = createOptionalBrowserSupabase();
+    if (!supabase) return;
+    const channel = supabase.channel(`session:${sessionId}`);
+    channel.on("broadcast", { event: "session-message" }, (event) => {
+      const payload =
+        event && typeof event === "object" && "payload" in event
+          ? (event as { payload?: unknown }).payload
+          : event;
+      this.applyRaw(payload);
+    });
+    void channel.subscribe();
+    this.supabaseChannel = {
+      unsubscribe: () => {
+        void supabase.removeChannel(channel);
+      },
+    };
+  }
+
+  private emitFeature(envelope: AudioFeatureEnvelope): void {
+    for (const listener of this.featureListeners) {
+      listener(envelope);
+    }
   }
 
   private applySnapshotPayload(snapshot: SessionSnapshot, deviceId: string): void {
@@ -395,6 +535,11 @@ export class SessionClient {
   }
 
   private applyRaw(raw: unknown): { requestSnapshot: boolean } {
+    const parsed = sessionMessageSchema.safeParse(raw);
+    if (parsed.success && parsed.data.type === "audio.features") {
+      this.emitFeature(parsed.data.payload);
+      return { requestSnapshot: false };
+    }
     const result = applySessionMessage(this.state, raw);
     this.state = result.state;
     this.emit();

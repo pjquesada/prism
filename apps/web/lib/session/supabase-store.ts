@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import {
+  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
+  AUDIO_FEATURE_ENVELOPE_STALE_MS,
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
@@ -19,7 +21,7 @@ import {
   type SessionSnapshot,
 } from "@prism/contracts";
 import type { Json } from "@prism/db";
-import { generatePairingCode } from "@prism/sync-engine";
+import { assertPayloadSize, generatePairingCode } from "@prism/sync-engine";
 
 import { getSessionSigningSecret } from "@/lib/session/config";
 import {
@@ -40,9 +42,17 @@ import { safeMessageForCode } from "@/lib/session/safe-errors";
 export type SessionAdminClient = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from: (relation: string) => any;
+  channel?: (name: string) => {
+    send: (message: {
+      type: "broadcast";
+      event: string;
+      payload: SessionMessage;
+    }) => Promise<{ error?: { message?: string } | null }>;
+  };
 };
 
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
+const lastFeatureFrameSeqBySession = new Map<string, number>();
 
 type StoredCredential = GuestCredential & { secretHmac: string };
 
@@ -322,6 +332,24 @@ async function bumpSessionSeq(client: SessionAdminClient, sessionId: string): Pr
     .eq("id", sessionId);
   throwIfError(updateError, "Failed to bump session seq.");
   return next;
+}
+
+async function fanoutRealtimeMessage(
+  client: SessionAdminClient,
+  sessionId: string,
+  message: SessionMessage,
+): Promise<void> {
+  if (typeof client.channel !== "function") return;
+  try {
+    const channel = client.channel(`session:${sessionId}`);
+    await channel.send({
+      type: "broadcast",
+      event: "session-message",
+      payload: message,
+    });
+  } catch {
+    // Fan-out is best-effort; snapshot polling remains the durable fallback.
+  }
 }
 
 export async function createGuestSessionDurable(
@@ -773,12 +801,34 @@ export async function publishAuthorizedMessageDurable(
     "session.patch",
     "handoff.request",
     "handoff.accept",
+    "audio.features",
   ]);
   if (controllerOnly.has(message.type) && cred.role === "display") {
     throw new SessionServiceError("unauthorized", "Displays cannot publish control events.", 401);
   }
 
   const now = nowIso();
+
+  if (message.type === "audio.features") {
+    const age = Date.now() - message.payload.timestampMs;
+    if (age > AUDIO_FEATURE_ENVELOPE_STALE_MS || age < -5_000) {
+      throw new SessionServiceError("invalid_request", "Stale feature envelope.", 400);
+    }
+    const lastSeq = lastFeatureFrameSeqBySession.get(cred.sessionId) ?? -1;
+    if (message.payload.frameSeq <= lastSeq) {
+      throw new SessionServiceError("invalid_request", "Out-of-order feature envelope.", 400);
+    }
+    assertPayloadSize(message.payload, AUDIO_FEATURE_ENVELOPE_MAX_BYTES);
+    lastFeatureFrameSeqBySession.set(cred.sessionId, message.payload.frameSeq);
+    const stampedFeatures: SessionMessage = {
+      ...message,
+      seq: 0,
+      sentAt: now,
+    };
+    await fanoutRealtimeMessage(client, cred.sessionId, stampedFeatures);
+    return stampedFeatures;
+  }
+
   const seq = await bumpSessionSeq(client, cred.sessionId);
   let stamped: SessionMessage = { ...message, seq, sentAt: now };
 
@@ -878,5 +928,6 @@ export async function publishAuthorizedMessageDurable(
       break;
   }
 
+  await fanoutRealtimeMessage(client, cred.sessionId, stamped);
   return stamped;
 }

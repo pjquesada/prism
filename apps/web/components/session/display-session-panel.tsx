@@ -102,26 +102,28 @@ export function DisplaySessionPanel() {
   }
 
   return (
-    <main className="prism-shell min-h-dvh">
-      <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-4 sm:px-6">
-        <header className="mb-4 flex items-center justify-between gap-3">
-          <p className="font-display text-xl font-bold tracking-tight">Prism</p>
-          <p className="text-sm text-prism-mist" data-testid="display-visualizer">
-            {sync.snapshot?.preset.visualizerId ?? "…"}
-          </p>
-        </header>
+    <main className="prism-display-root">
+      <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <p className="font-display text-xl font-bold tracking-tight">Prism</p>
+        <p className="text-sm text-prism-mist" data-testid="display-visualizer">
+          {sync.snapshot?.preset.visualizerId ?? "…"}
+        </p>
+      </header>
+      <div className="relative z-10 px-4 sm:px-6">
         <ConnectionBanner status={sync.connection} />
         {restoreError && restoreError !== "unauthorized" && restoreError !== "restore_timeout" ? (
           <p className="mb-3 text-sm text-prism-ember" role="alert" data-testid="restore-error">
             Could not restore session ({restoreError}).
           </p>
         ) : null}
-        <SessionVisualizerStage
-          sync={sync}
-          isAudioAuthority={sync.localRole === "combined" || sync.localRole === "controller"}
-          className="mt-4 flex-1"
-        />
       </div>
+      <SessionVisualizerStage
+        sync={sync}
+        isAudioAuthority={false}
+        immersive
+        subscribeFeatures={(listener) => client.subscribeFeatures(listener)}
+        className="relative z-10 min-h-0 flex-1 px-4 pb-3 sm:px-6"
+      />
     </main>
   );
 }

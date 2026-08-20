@@ -254,6 +254,7 @@ class FakeQuery implements PromiseLike<{
 }
 
 export function createFakeAdminClient(db: FakeSessionDatabase) {
+  const broadcasts: unknown[] = [];
   return {
     from: (relation: string) => {
       if (!(relation in db)) {
@@ -261,6 +262,15 @@ export function createFakeAdminClient(db: FakeSessionDatabase) {
       }
       return new FakeQuery(db, relation as keyof FakeSessionDatabase);
     },
+    channel(name: string) {
+      return {
+        send: async (message: { type: string; event: string; payload: unknown }) => {
+          broadcasts.push({ channel: name, ...message });
+          return { error: null };
+        },
+      };
+    },
+    __broadcasts: broadcasts,
   };
 }
 

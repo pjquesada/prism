@@ -3,6 +3,7 @@ import {
   authorizeCredential,
   getSnapshotForCredential,
   heartbeat,
+  resolveSessionTransport,
 } from "@/lib/session/session-service";
 import {
   assertMutatingSameOrigin,
@@ -25,6 +26,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     const snapshot = await getSnapshotForCredential(token);
     return Response.json({
       snapshot,
+      transport: resolveSessionTransport(),
       device: {
         deviceId: cred.deviceId,
         role: cred.role,

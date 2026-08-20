@@ -15,6 +15,7 @@ import {
   type PresetConfig,
   type VisualizerId,
 } from "@prism/contracts";
+import { LiveListenEngine } from "@prism/audio-engine";
 import type { SyncEngineState } from "@prism/sync-engine";
 
 import { AudioModeSelector } from "@/components/audio-mode-selector";
@@ -50,6 +51,8 @@ export function ControllerSessionPanel() {
   const attemptedSessionRef = useRef<string | null>(null);
   const publishGenRef = useRef(0);
   const paramTimerRef = useRef<number | null>(null);
+  const [liveListenEngine, setLiveListenEngine] = useState<LiveListenEngine | null>(null);
+  const liveListenEngineRef = useRef<LiveListenEngine | null>(null);
 
   const restore = useCallback(() => {
     if (!sessionId) return;
@@ -71,6 +74,8 @@ export function ControllerSessionPanel() {
   useEffect(() => {
     return () => {
       if (paramTimerRef.current) window.clearTimeout(paramTimerRef.current);
+      void liveListenEngineRef.current?.dispose();
+      liveListenEngineRef.current = null;
     };
   }, []);
 
@@ -255,10 +260,33 @@ export function ControllerSessionPanel() {
     [client, sessionId, sync.localDeviceId],
   );
 
+  const startLiveListenFromGesture = useCallback(() => {
+    let engine = liveListenEngineRef.current;
+    if (!engine) {
+      engine = new LiveListenEngine();
+      liveListenEngineRef.current = engine;
+      setLiveListenEngine(engine);
+    }
+    void engine.start();
+    return engine;
+  }, []);
+
+  const stopLiveListen = useCallback(() => {
+    const engine = liveListenEngineRef.current;
+    liveListenEngineRef.current = null;
+    setLiveListenEngine(null);
+    if (engine) void engine.dispose();
+  }, []);
+
   const publishAudioMode = useCallback(
     (audioMode: AudioMode) => {
       if (!sync.localDeviceId || !sync.snapshot) return;
       const live = audioMode === "live_listen";
+      if (live) {
+        startLiveListenFromGesture();
+      } else {
+        stopLiveListen();
+      }
       void client.publish({
         type: "playback.update",
         sessionId,
@@ -273,7 +301,14 @@ export function ControllerSessionPanel() {
         },
       });
     },
-    [client, sessionId, sync.localDeviceId, sync.snapshot],
+    [
+      client,
+      sessionId,
+      startLiveListenFromGesture,
+      stopLiveListen,
+      sync.localDeviceId,
+      sync.snapshot,
+    ],
   );
 
   const restoreFailed =
@@ -539,6 +574,10 @@ export function ControllerSessionPanel() {
         sync={viewSync}
         isAudioAuthority={isController}
         onPlaybackAnchor={onPlaybackAnchor}
+        liveListenEngine={liveListenEngine}
+        subscribeFeatures={(listener) => client.subscribeFeatures(listener)}
+        publishFeatures={(envelope) => client.publishFeatures(envelope)}
+        onStartLiveListen={startLiveListenFromGesture}
       />
     </div>
   );
