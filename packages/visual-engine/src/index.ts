@@ -23,6 +23,18 @@ export {
   type VisualizerCanvasProps,
 } from "./visualizer-canvas.js";
 export {
+  acquireAnimationLoop,
+  getPrismPerfSnapshot,
+  isPrismPerfEnabled,
+  noteDroppedOrStaleFrame,
+  noteFeatureMessage,
+  noteRenderFrame,
+  registerPerfResourceSource,
+  resetPrismPerfForTests,
+  type PrismPerfSnapshot,
+  type PrismResourceSnapshot,
+} from "./perf-instrumentation.js";
+export {
   applyVisualizerResize,
   computeBackingStoreSize,
   fillCanvasElement,

@@ -8,6 +8,7 @@ import {
   silentFrame,
   type FeatureExtractorState,
 } from "./feature-math.js";
+import { acquireResource } from "./runtime-resources.js";
 
 export type DemoTrackEngineStatus =
   "idle" | "loading" | "ready" | "needs_gesture" | "playing" | "paused" | "unsupported" | "error";
@@ -58,6 +59,9 @@ export class DemoTrackEngine {
   private visibilityHandler: (() => void) | null = null;
   private mediaErrorHandler: (() => void) | null = null;
   private mediaCanPlayHandler: (() => void) | null = null;
+  private releaseContext: (() => void) | null = null;
+  private releaseSource: (() => void) | null = null;
+  private releaseLoop: (() => void) | null = null;
 
   constructor(options: DemoTrackEngineOptions) {
     this.trackUrl = options.trackUrl;
@@ -182,6 +186,8 @@ export class DemoTrackEngine {
     this.analyser.smoothingTimeConstant = 0.7;
     this.sourceNode.connect(this.analyser);
     this.analyser.connect(this.audioContext.destination);
+    this.releaseContext = acquireResource("audioContexts");
+    this.releaseSource = acquireResource("mediaSources");
 
     this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
     this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
@@ -198,6 +204,7 @@ export class DemoTrackEngine {
 
   async play(): Promise<void> {
     if (this.disposed) return;
+    if (this.status === "playing") return;
     if (!this.audioContext || !this.mediaElement) {
       await this.prepare();
     }
@@ -264,6 +271,10 @@ export class DemoTrackEngine {
     this.analyser = null;
     this.frequencyBuffer = null;
     this.timeBuffer = null;
+    this.releaseSource?.();
+    this.releaseSource = null;
+    this.releaseContext?.();
+    this.releaseContext = null;
 
     if (this.audioContext) {
       try {
@@ -280,6 +291,7 @@ export class DemoTrackEngine {
 
   private startLoop(): void {
     if (this.rafId !== null) return;
+    this.releaseLoop = acquireResource("animationLoops");
     const tick = (now: number) => {
       this.rafId = window.requestAnimationFrame(tick);
       if (!this.analyser || !this.frequencyBuffer || !this.timeBuffer || !this.audioContext) return;
@@ -309,6 +321,8 @@ export class DemoTrackEngine {
       window.cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+    this.releaseLoop?.();
+    this.releaseLoop = null;
   }
 
   private setStatus(status: DemoTrackEngineStatus): void {

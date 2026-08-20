@@ -65,12 +65,20 @@ vi.mock("@prism/audio-engine", () => ({
   }),
   silentFrame: (timestampMs = 0, bandCount = 32) =>
     createSilentFeatureFrame(timestampMs, bandCount),
+  LIVE_LISTEN_SOUND_THRESHOLD: 0.035,
+  getResourceCounts: () => ({
+    audioContexts: 0,
+    mediaSources: 0,
+    animationLoops: 0,
+    realtimeSubscriptions: 0,
+  }),
 }));
 
 vi.mock("@prism/visual-engine", () => ({
   VisualizerCanvas: ({ plugin }: { plugin: { id: string } }) => (
     <div data-visualizer={plugin.id}>visualizer-canvas</div>
   ),
+  registerPerfResourceSource: vi.fn(),
 }));
 
 vi.mock("@prism/visualizers", () => ({

@@ -15,6 +15,9 @@ import {
   stopMediaStream,
   type LiveListenFailureStatus,
 } from "./media-permission.js";
+import { acquireResource } from "./runtime-resources.js";
+
+export const LIVE_LISTEN_SOUND_THRESHOLD = 0.035;
 
 export type LiveListenEngineStatus =
   | "idle"
@@ -78,6 +81,9 @@ export class LiveListenEngine {
   private lastEmitMs = 0;
   private disposed = false;
   private contextStateHandler: (() => void) | null = null;
+  private releaseContext: (() => void) | null = null;
+  private releaseSource: (() => void) | null = null;
+  private releaseLoop: (() => void) | null = null;
 
   constructor(options: LiveListenEngineOptions = {}) {
     this.fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
@@ -217,11 +223,13 @@ export class LiveListenEngine {
       this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = this.fftSize;
-      this.analyser.smoothingTimeConstant = 0.7;
+      this.analyser.smoothingTimeConstant = 0.35;
       // Intentionally not connected to destination — Live Listen must not play the mic.
       this.sourceNode.connect(this.analyser);
       this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
       this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
+      this.releaseContext = acquireResource("audioContexts");
+      this.releaseSource = acquireResource("mediaSources");
       this.bindContextState(this.audioContext);
     } catch {
       await this.tearDownGraph();
@@ -269,6 +277,10 @@ export class LiveListenEngine {
     this.analyser = null;
     this.frequencyBuffer = null;
     this.timeBuffer = null;
+    this.releaseSource?.();
+    this.releaseSource = null;
+    this.releaseContext?.();
+    this.releaseContext = null;
 
     if (this.audioContext) {
       try {
@@ -306,6 +318,7 @@ export class LiveListenEngine {
 
   private startLoop(): void {
     if (this.rafId !== null) return;
+    this.releaseLoop = acquireResource("animationLoops");
     const tick = (now: number) => {
       this.rafId = this.raf(tick);
       if (!this.analyser || !this.frequencyBuffer || !this.timeBuffer || !this.audioContext) return;
@@ -335,6 +348,8 @@ export class LiveListenEngine {
       this.caf(this.rafId);
       this.rafId = null;
     }
+    this.releaseLoop?.();
+    this.releaseLoop = null;
   }
 
   private setStatus(status: LiveListenEngineStatus): void {

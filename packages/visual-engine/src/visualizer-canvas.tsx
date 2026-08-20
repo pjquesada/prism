@@ -20,6 +20,7 @@ import {
   type AdaptiveQualityManager as AdaptiveQualityManagerType,
 } from "./adaptive-quality.js";
 import { applyVisualizerResize, observeElementSize, VISUALIZER_HOST_FILL_STYLE } from "./resize.js";
+import { acquireAnimationLoop, noteRenderFrame } from "./perf-instrumentation.js";
 import {
   applyCameraMode,
   clearScenePlugins,
@@ -32,6 +33,8 @@ export type VisualizerCanvasProps = {
   plugin: VisualizerPlugin;
   /** Prefer a ref for high-frequency frames to avoid React render thrash. */
   featuresRef: RefObject<AudioFeatureFrame>;
+  /** Optional per-RAF resolver so displays can interpolate without a second loop. */
+  resolveFeatures?: (nowMs: number) => AudioFeatureFrame;
   quality?: QualityTier;
   /** When true, AdaptiveQualityManager may step tiers from frame timings. */
   adaptiveQuality?: boolean;
@@ -54,6 +57,7 @@ type HostHandles = {
 function PluginRuntime({
   plugin,
   featuresRef,
+  resolveFeatures,
   params,
   quality,
   reducedMotion,
@@ -66,6 +70,7 @@ function PluginRuntime({
 }: {
   plugin: VisualizerPlugin;
   featuresRef: RefObject<AudioFeatureFrame>;
+  resolveFeatures?: (nowMs: number) => AudioFeatureFrame;
   params: Record<string, unknown>;
   quality: QualityTier;
   reducedMotion: boolean;
@@ -83,6 +88,7 @@ function PluginRuntime({
     reducedMotion,
     albumArtUrl,
     pluginId: plugin.id,
+    resolveFeatures,
   });
   latest.current = {
     params,
@@ -90,6 +96,7 @@ function PluginRuntime({
     reducedMotion,
     albumArtUrl,
     pluginId: plugin.id,
+    resolveFeatures,
   };
   const hostRef = useRef({
     scene,
@@ -123,6 +130,13 @@ function PluginRuntime({
   };
   const lastFrameMs = useRef(typeof performance !== "undefined" ? performance.now() : 0);
   const mountedPluginId = useRef<string | null>(null);
+  const updatePropsRef = useRef({
+    features: createSilentFeatureFrame(),
+    preset: { params },
+    quality,
+    reducedMotion,
+    albumArtUrl: albumArtUrl ?? undefined,
+  });
 
   // Capture host handles and keep camera / backing store in sync with the R3F container.
   useEffect(() => {
@@ -231,9 +245,12 @@ function PluginRuntime({
   }, [quality, adaptiveEnabled, adaptive, gl, instanceRef]);
 
   useFrame(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+
     const now = typeof performance !== "undefined" ? performance.now() : 0;
     const frameMs = now - lastFrameMs.current;
     lastFrameMs.current = now;
+    noteRenderFrame(now);
 
     if (adaptiveEnabled) {
       const changed = adaptive.sampleFrame(frameMs, now);
@@ -251,18 +268,19 @@ function PluginRuntime({
     }
 
     const instance = instanceRef.current;
-    const features = featuresRef.current;
+    const resolver = latest.current.resolveFeatures;
+    const features = resolver ? resolver(now) : featuresRef.current;
     if (!instance || !features) return;
     if (mountedPluginId.current !== latest.current.pluginId) return;
 
     const tier = adaptiveEnabled ? adaptive.getEffectiveTier() : latest.current.quality;
-    instance.update({
-      features,
-      preset: { params: latest.current.params },
-      quality: tier,
-      reducedMotion: latest.current.reducedMotion,
-      albumArtUrl: latest.current.albumArtUrl,
-    });
+    const props = updatePropsRef.current;
+    props.features = features;
+    props.preset.params = latest.current.params;
+    props.quality = tier;
+    props.reducedMotion = latest.current.reducedMotion;
+    props.albumArtUrl = latest.current.albumArtUrl ?? undefined;
+    instance.update(props);
   });
 
   return null;
@@ -275,6 +293,7 @@ function PluginRuntime({
 export function VisualizerCanvas({
   plugin,
   featuresRef,
+  resolveFeatures,
   quality = "high",
   adaptiveQuality = true,
   className,
@@ -287,6 +306,7 @@ export function VisualizerCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const [supported, setSupported] = useState(true);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const [frameloop, setFrameloop] = useState<"always" | "never">("always");
   const instanceRef = useRef<ReturnType<VisualizerPlugin["mount"]> | null>(null);
   const handlesRef = useRef<HostHandles | null>(null);
   const adaptiveRef = useRef(new AdaptiveQualityManager({ initialTier: quality }));
@@ -301,7 +321,16 @@ export function VisualizerCanvas({
       setReducedMotion(mq.matches);
     };
     mq.addEventListener("change", onMotion);
-    return () => mq.removeEventListener("change", onMotion);
+    const onVisibility = () => {
+      setFrameloop(document.visibilityState === "hidden" ? "never" : "always");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    const releaseLoop = acquireAnimationLoop();
+    return () => {
+      mq.removeEventListener("change", onMotion);
+      document.removeEventListener("visibilitychange", onVisibility);
+      releaseLoop();
+    };
   }, []);
 
   useEffect(() => {
@@ -369,6 +398,7 @@ export function VisualizerCanvas({
       <Canvas
         camera={{ position: [0, 0, 8], fov: 50, near: 0.1, far: 200 }}
         dpr={1}
+        frameloop={frameloop}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
         resize={{ scroll: false, debounce: 0, offsetSize: true }}
         style={{ ...VISUALIZER_HOST_FILL_STYLE }}
@@ -377,6 +407,7 @@ export function VisualizerCanvas({
         <PluginRuntime
           plugin={plugin}
           featuresRef={featuresRef}
+          resolveFeatures={resolveFeatures}
           params={resolvedParams}
           quality={quality}
           reducedMotion={reducedMotion}

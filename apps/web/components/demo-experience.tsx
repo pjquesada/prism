@@ -5,6 +5,8 @@ import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   DemoTrackEngine,
   LiveListenEngine,
+  LIVE_LISTEN_SOUND_THRESHOLD,
+  getResourceCounts,
   silentFrame,
   type DemoTrackEngineStatus,
   type LiveListenEngineStatus,
@@ -19,7 +21,7 @@ import {
   type QualityTier,
   type VisualizerId,
 } from "@prism/contracts";
-import { VisualizerCanvas } from "@prism/visual-engine";
+import { VisualizerCanvas, registerPerfResourceSource } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
 
 import { AudioModeSelector } from "@/components/audio-mode-selector";
@@ -42,6 +44,8 @@ import {
 } from "@/lib/local-artwork";
 import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 import { isLiveListenEnabled } from "@/lib/live-listen-enabled";
+
+registerPerfResourceSource(getResourceCounts);
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
@@ -127,6 +131,8 @@ export function DemoExperience({
   const [audioMode, setAudioMode] = useState<AudioMode>("demo_track");
   const [status, setStatus] = useState<DemoTrackEngineStatus>("idle");
   const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
+  const lastLiveStatusRef = useRef<LiveListenEngineStatus>("idle");
+  const lastDemoStatusRef = useRef<DemoTrackEngineStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [hud, setHud] = useState({ energy: 0, onset: false, bass: 0, mid: 0, high: 0 });
   const [qualityMode, setQualityMode] = useState<QualityTier | "auto">("auto");
@@ -180,8 +186,11 @@ export function DemoExperience({
     let lastHud = 0;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
-      setStatus(event.status);
-      setErrorMessage(event.errorMessage);
+      if (event.status !== lastDemoStatusRef.current) {
+        lastDemoStatusRef.current = event.status;
+        setStatus(event.status);
+        setErrorMessage(event.errorMessage);
+      }
       const now = typeof performance !== "undefined" ? performance.now() : 0;
       if (now - lastHud > 200) {
         lastHud = now;
@@ -219,11 +228,15 @@ export function DemoExperience({
     }
     const engine = liveEngineRef.current;
     if (!engine) return;
+    lastLiveStatusRef.current = "idle";
     let lastHud = 0;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
-      setLiveStatus(event.status);
-      setErrorMessage(event.errorMessage);
+      if (event.status !== lastLiveStatusRef.current) {
+        lastLiveStatusRef.current = event.status;
+        setLiveStatus(event.status);
+        setErrorMessage(event.errorMessage);
+      }
       const now = typeof performance !== "undefined" ? performance.now() : 0;
       if (now - lastHud > 200) {
         lastHud = now;
@@ -449,6 +462,8 @@ export function DemoExperience({
           <LiveListenStatusPanel
             status={liveStatus}
             errorMessage={errorMessage}
+            hasSound={hud.energy >= LIVE_LISTEN_SOUND_THRESHOLD}
+            inputLevel={hud.energy}
             onRetry={() => {
               void liveEngineRef.current?.start();
             }}
