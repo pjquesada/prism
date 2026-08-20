@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AUDIO_FEATURE_ENVELOPE_INTERVAL_MS,
+  audioFeatureFrameToEnvelope,
   createSilentFeatureFrame,
   defaultParamsForVisualizer,
   parseVisualizerParams,
   type ActivePresetSnapshot,
+  type AudioFeatureEnvelope,
   type AudioFeatureFrame,
   type PlaybackState,
   type QualityTier,
@@ -13,7 +16,8 @@ import {
 } from "@prism/contracts";
 import {
   DemoTrackEngine,
-  LiveListenEngine,
+  RemoteFeatureInterpolator,
+  type LiveListenEngine,
   type LiveListenEngineStatus,
 } from "@prism/audio-engine";
 import { VisualizerCanvas } from "@prism/visual-engine";
@@ -26,9 +30,12 @@ import {
 } from "@prism/sync-engine";
 
 import { LiveListenStatusPanel } from "@/components/live-listen-status";
+import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import { PLACEHOLDER_ARTWORK_PATH } from "@/lib/local-artwork";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
+const LIVE_LISTEN_PRIVACY =
+  "Microphone audio stays on this device. Only anonymous visualization levels are shared with your paired display.";
 
 type SessionVisualizerStageProps = {
   sync: SyncEngineState;
@@ -36,6 +43,12 @@ type SessionVisualizerStageProps = {
   isAudioAuthority: boolean;
   onPlaybackAnchor?: (playback: PlaybackState) => void;
   className?: string;
+  immersive?: boolean;
+  /** Controller-owned engine started from a user gesture. Displays must omit this. */
+  liveListenEngine?: LiveListenEngine | null;
+  subscribeFeatures?: (listener: (envelope: AudioFeatureEnvelope) => void) => () => void;
+  publishFeatures?: (envelope: AudioFeatureEnvelope) => void;
+  onStartLiveListen?: () => void;
 };
 
 export function SessionVisualizerStage({
@@ -43,16 +56,25 @@ export function SessionVisualizerStage({
   isAudioAuthority,
   onPlaybackAnchor,
   className,
+  immersive = false,
+  liveListenEngine = null,
+  subscribeFeatures,
+  publishFeatures,
+  onStartLiveListen,
 }: SessionVisualizerStageProps) {
   const snapshot = sync.snapshot;
   const engineRef = useRef<DemoTrackEngine | null>(null);
-  const liveEngineRef = useRef<LiveListenEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(createSilentFeatureFrame());
+  const interpolatorRef = useRef(new RemoteFeatureInterpolator());
+  const remoteRafRef = useRef<number | null>(null);
+  const frameSeqRef = useRef(0);
+  const lastPublishMsRef = useRef(0);
   const [engineReady, setEngineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsGesture, setNeedsGesture] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
   const [liveError, setLiveError] = useState<string | undefined>();
+  const [remoteEnergy, setRemoteEnergy] = useState(0);
   const lastAnchorRef = useRef(0);
 
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
@@ -63,7 +85,7 @@ export function SessionVisualizerStage({
   const liveListen = audioMode === "live_listen";
   const sessionId = snapshot?.session.id;
   const followerSilent = liveListen && !isAudioAuthority;
-  const ready = followerSilent || engineReady;
+  const ready = followerSilent || engineReady || liveStatus === "listening";
   const deviceIndex = snapshot ? displayDeviceIndex(snapshot.devices, sync.localDeviceId ?? "") : 0;
   const params = useMemo(() => {
     const base = parseVisualizerParams(
@@ -103,16 +125,8 @@ export function SessionVisualizerStage({
   }, [liveListen, sessionId]);
 
   useEffect(() => {
-    if (!sessionId || !liveListen) {
-      liveEngineRef.current = null;
-      return;
-    }
-    if (!isAudioAuthority) {
-      featuresRef.current = createSilentFeatureFrame();
-      return;
-    }
-    const engine = new LiveListenEngine();
-    liveEngineRef.current = engine;
+    if (!sessionId || !liveListen || !isAudioAuthority || !liveListenEngine) return;
+    const engine = liveListenEngine;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
       setLiveStatus(event.status);
@@ -120,25 +134,63 @@ export function SessionVisualizerStage({
       setEngineReady(
         event.status === "listening" || event.status === "paused" || event.status === "requesting",
       );
-      setNeedsGesture(false);
+      setNeedsGesture(event.status === "idle" || event.status === "inactive");
+      if (event.status !== "listening" || !publishFeatures) return;
+      const now = Date.now();
+      if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
+      lastPublishMsRef.current = now;
+      frameSeqRef.current += 1;
+      const envelope = audioFeatureFrameToEnvelope(event.frame, frameSeqRef.current, now);
+      publishFeatures(envelope);
     });
-    void engine.start();
     return () => {
       unsubscribe();
-      void engine.dispose();
-      liveEngineRef.current = null;
     };
-  }, [liveListen, isAudioAuthority, sessionId]);
+  }, [liveListen, isAudioAuthority, sessionId, liveListenEngine, publishFeatures]);
+
+  useEffect(() => {
+    const interpolator = interpolatorRef.current;
+    if (!liveListen || isAudioAuthority || !subscribeFeatures) {
+      interpolator.reset();
+      if (remoteRafRef.current !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(remoteRafRef.current);
+        remoteRafRef.current = null;
+      }
+      return;
+    }
+    featuresRef.current = createSilentFeatureFrame();
+    const unsubscribe = subscribeFeatures((envelope) => {
+      interpolator.ingest(envelope, Date.now());
+    });
+    const tick = () => {
+      remoteRafRef.current = window.requestAnimationFrame(tick);
+      const frame = interpolator.sample(Date.now());
+      featuresRef.current = frame;
+      setRemoteEnergy(frame.energy);
+    };
+    remoteRafRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      unsubscribe();
+      if (remoteRafRef.current !== null) {
+        window.cancelAnimationFrame(remoteRafRef.current);
+        remoteRafRef.current = null;
+      }
+      interpolator.reset();
+    };
+  }, [liveListen, isAudioAuthority, subscribeFeatures]);
 
   useEffect(() => {
     const playback = snapshot?.playback;
     if (!playback) return;
 
     if (liveListen) {
-      const live = liveEngineRef.current;
+      const live = liveListenEngine;
       if (!isAudioAuthority || !live) return;
-      if (playback.isPlaying) void live.start();
-      else void live.pause();
+      if (playback.isPlaying) {
+        if (live.getStatus() === "paused") void live.start();
+      } else if (live.getStatus() === "listening") {
+        void live.pause();
+      }
       return;
     }
 
@@ -171,7 +223,7 @@ export function SessionVisualizerStage({
       void engine.pause();
       engine.setPositionMs(playback.positionMs);
     }
-  }, [snapshot?.playback, isAudioAuthority, sync.clock.offsetMs, liveListen]);
+  }, [snapshot?.playback, isAudioAuthority, sync.clock.offsetMs, liveListen, liveListenEngine]);
 
   useEffect(() => {
     if (!isAudioAuthority || !onPlaybackAnchor || !snapshot) return;
@@ -179,7 +231,7 @@ export function SessionVisualizerStage({
       const playback = snapshot.playback;
       const now = Date.now();
       if (playback.audioMode === "live_listen") {
-        const live = liveEngineRef.current;
+        const live = liveListenEngine;
         if (!live) return;
         if (now - lastAnchorRef.current < 1800 && live.getStatus() === "listening") return;
         lastAnchorRef.current = now;
@@ -210,7 +262,7 @@ export function SessionVisualizerStage({
       });
     }, 2000);
     return () => window.clearInterval(id);
-  }, [isAudioAuthority, onPlaybackAnchor, snapshot, liveListen]);
+  }, [isAudioAuthority, onPlaybackAnchor, snapshot, liveListen, liveListenEngine]);
 
   if (!snapshot) {
     return (
@@ -220,9 +272,15 @@ export function SessionVisualizerStage({
     );
   }
 
+  const showEnableMic =
+    liveListen &&
+    isAudioAuthority &&
+    !liveListenEngine &&
+    (liveStatus === "idle" || liveStatus === "inactive" || liveStatus === "paused");
+
   return (
-    <div className={className}>
-      {!ready && !error ? (
+    <div className={["flex min-h-0 flex-1 flex-col", className].filter(Boolean).join(" ")}>
+      {!ready && !error && !liveListen ? (
         <p className="mb-3 text-sm text-prism-mist" role="status">
           Loading visualizer…
         </p>
@@ -241,23 +299,46 @@ export function SessionVisualizerStage({
           Enable audio on this display
         </button>
       ) : null}
+      {showEnableMic ? (
+        <button
+          type="button"
+          className="prism-btn prism-btn-primary mb-3"
+          data-testid="enable-live-listen"
+          onClick={() => onStartLiveListen?.()}
+        >
+          Enable Live Listen
+        </button>
+      ) : null}
+      {liveListen && isAudioAuthority ? (
+        <p className="mb-3 text-sm text-prism-mist" data-testid="live-listen-privacy">
+          {LIVE_LISTEN_PRIVACY}
+        </p>
+      ) : null}
       {liveListen && !isAudioAuthority ? (
         <p
           className="mb-3 text-sm text-prism-mist"
           role="status"
           data-testid="live-listen-follower"
         >
-          Controller is using Live Listen. This display does not capture a microphone; visuals
-          follow preset only.
+          Controller is using Live Listen. This display never asks for a microphone — it follows
+          anonymous visualization levels only.
         </p>
       ) : null}
-      <div className="relative min-h-[min(70vh,36rem)] overflow-hidden rounded-sm border border-prism-slate bg-prism-deep/70">
+      <VisualizerStageFrame
+        label={`${plugin.label} visualizer`}
+        immersive={immersive}
+        showFullscreen={immersive}
+      >
         {liveListen && isAudioAuthority ? (
           <LiveListenStatusPanel
             status={liveStatus}
             errorMessage={liveError}
             onRetry={() => {
-              void liveEngineRef.current?.start();
+              if (liveListenEngine) {
+                void liveListenEngine.start();
+                return;
+              }
+              onStartLiveListen?.();
             }}
             onUseDemoTrack={() => {
               onPlaybackAnchor?.({
@@ -276,7 +357,17 @@ export function SessionVisualizerStage({
           params={params}
           albumArtUrl={visualizerId === "album_world" ? PLACEHOLDER_ARTWORK_PATH : null}
         />
-      </div>
+        {liveListen && !isAudioAuthority ? (
+          <span
+            className="sr-only"
+            data-testid="remote-feature-energy"
+            data-energy={remoteEnergy.toFixed(3)}
+            data-feature-source="remote"
+          >
+            Remote energy {remoteEnergy.toFixed(2)}
+          </span>
+        ) : null}
+      </VisualizerStageFrame>
     </div>
   );
 }

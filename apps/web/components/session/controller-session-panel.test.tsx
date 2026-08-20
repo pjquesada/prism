@@ -57,7 +57,15 @@ vi.mock("@/lib/use-guest-preset-store", () => ({
 vi.mock("@/lib/session/use-session-client", () => ({
   takeSessionMeta: vi.fn(),
   useSessionClient: () => ({
-    client: { restoreWithCookie, publish, rotatePairingCode, end, handoff },
+    client: {
+      restoreWithCookie,
+      publish,
+      publishFeatures: vi.fn(),
+      subscribeFeatures: vi.fn(() => () => undefined),
+      rotatePairingCode,
+      end,
+      handoff,
+    },
     sync: syncState,
   }),
 }));

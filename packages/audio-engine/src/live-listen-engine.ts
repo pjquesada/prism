@@ -24,6 +24,7 @@ export type LiveListenEngineStatus =
   | "denied"
   | "unavailable"
   | "unsupported"
+  | "inactive"
   | "error";
 
 export type LiveListenEngineOptions = {
@@ -76,6 +77,7 @@ export class LiveListenEngine {
   private rafId: number | null = null;
   private lastEmitMs = 0;
   private disposed = false;
+  private contextStateHandler: (() => void) | null = null;
 
   constructor(options: LiveListenEngineOptions = {}) {
     this.fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
@@ -131,12 +133,23 @@ export class LiveListenEngine {
     if (this.status === "listening" || this.status === "requesting") return;
 
     if (this.status === "paused" && this.analyser && this.stream) {
+      const context = this.audioContext;
+      if (context?.state === "suspended") {
+        try {
+          await context.resume();
+        } catch {
+          this.setFailure("inactive", "Audio context is inactive. Tap Live Listen again.");
+          return;
+        }
+      }
+      if (context && context.state !== "running") {
+        this.setFailure("inactive", "Audio context is inactive. Tap Live Listen again.");
+        return;
+      }
       this.setStatus("listening");
       this.startLoop();
       return;
     }
-
-    await this.tearDownGraph();
 
     const devices = typeof navigator !== "undefined" ? (navigator.mediaDevices ?? null) : null;
     if (!canRequestMicrophone(devices ?? { getUserMedia: this.getUserMedia }, this.isSecure())) {
@@ -146,8 +159,34 @@ export class LiveListenEngine {
 
     this.setStatus("requesting");
 
+    // Invoke getUserMedia and AudioContext construction before any await so a
+    // click/tap user gesture is still valid (Safari/iOS especially).
+    let streamPromise: Promise<MediaStream>;
     try {
-      this.stream = await this.getUserMedia(LIVE_LISTEN_AUDIO_CONSTRAINTS);
+      streamPromise = this.getUserMedia(LIVE_LISTEN_AUDIO_CONSTRAINTS);
+    } catch (error) {
+      const failure = classifyGetUserMediaError(error);
+      this.setFailure(failure.status, failure.message);
+      return;
+    }
+
+    const nextContext = this.createContext();
+    const resumePromise =
+      nextContext?.state === "suspended" ? nextContext.resume() : Promise.resolve();
+
+    await this.tearDownGraph();
+    this.audioContext = nextContext;
+
+    try {
+      await resumePromise;
+    } catch {
+      stopMediaStream(await streamPromise.catch(() => null));
+      this.setFailure("inactive", "Audio context is inactive. Tap Live Listen again.");
+      return;
+    }
+
+    try {
+      this.stream = await streamPromise;
     } catch (error) {
       const failure = classifyGetUserMediaError(error);
       this.setFailure(failure.status, failure.message);
@@ -160,7 +199,6 @@ export class LiveListenEngine {
       return;
     }
 
-    this.audioContext = this.createContext();
     if (!this.audioContext || !this.stream) {
       stopMediaStream(this.stream);
       this.stream = null;
@@ -168,10 +206,14 @@ export class LiveListenEngine {
       return;
     }
 
+    if (this.audioContext.state !== "running") {
+      stopMediaStream(this.stream);
+      this.stream = null;
+      this.setFailure("inactive", "Audio context is inactive. Tap Live Listen again.");
+      return;
+    }
+
     try {
-      if (this.audioContext.state === "suspended") {
-        await this.audioContext.resume();
-      }
       this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = this.fftSize;
@@ -180,6 +222,7 @@ export class LiveListenEngine {
       this.sourceNode.connect(this.analyser);
       this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
       this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
+      this.bindContextState(this.audioContext);
     } catch {
       await this.tearDownGraph();
       this.setFailure("error", "Could not start Live Listen. Try again or use Demo Track.");
@@ -208,6 +251,7 @@ export class LiveListenEngine {
 
   private async tearDownGraph(): Promise<void> {
     this.stopLoop();
+    this.unbindContextState();
     stopMediaStream(this.stream);
     this.stream = null;
 
@@ -234,6 +278,30 @@ export class LiveListenEngine {
       }
       this.audioContext = null;
     }
+  }
+
+  private bindContextState(context: AudioContext): void {
+    this.unbindContextState();
+    const handler = () => {
+      if (this.disposed || this.status !== "listening") return;
+      const state = this.audioContext?.state as string | undefined;
+      if (state === "suspended" || state === "interrupted") {
+        this.setFailure("inactive", "Audio context is inactive. Tap Live Listen again.");
+      }
+    };
+    this.contextStateHandler = handler;
+    context.addEventListener("statechange", handler);
+  }
+
+  private unbindContextState(): void {
+    if (this.audioContext && this.contextStateHandler) {
+      try {
+        this.audioContext.removeEventListener("statechange", this.contextStateHandler);
+      } catch {
+        // ignore
+      }
+    }
+    this.contextStateHandler = null;
   }
 
   private startLoop(): void {

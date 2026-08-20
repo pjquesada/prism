@@ -17,6 +17,10 @@ function copyForStatus(status: LiveListenEngineStatus, errorMessage?: string): s
       return "Live Listen is analyzing this device’s microphone locally. Audio is not recorded or sent.";
     case "paused":
       return "Live Listen is paused. The microphone is no longer being analyzed.";
+    case "inactive":
+      return (
+        errorMessage ?? "Audio context is inactive. Tap Try again after interacting with the page."
+      );
     case "denied":
       return (
         errorMessage ??
@@ -44,6 +48,7 @@ export function LiveListenStatusPanel({
     status === "denied" ||
     status === "unavailable" ||
     status === "unsupported" ||
+    status === "inactive" ||
     status === "error" ||
     status === "requesting";
 
@@ -53,6 +58,7 @@ export function LiveListenStatusPanel({
     status === "denied" ||
     status === "unavailable" ||
     status === "unsupported" ||
+    status === "inactive" ||
     status === "error";
 
   return (

@@ -16,6 +16,9 @@ export const PRESENCE_OFFLINE_MS = 45_000;
 /** Max visual-intent / preset patch emit rate. */
 export const VISUAL_INTENT_MAX_HZ = 15;
 
+/** Compact Live Listen envelope emit cadence (controller → display). */
+export const AUDIO_FEATURE_MAX_HZ = 20;
+
 /** Playback anchor emit cadence while playing (not per-frame). */
 export const PLAYBACK_ANCHOR_INTERVAL_MS = 2_000;
 

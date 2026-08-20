@@ -6,6 +6,7 @@ export {
   PRESENCE_OFFLINE_MS,
   SMALL_DRIFT_MS,
   VISUAL_INTENT_MAX_HZ,
+  AUDIO_FEATURE_MAX_HZ,
   sessionChannelName,
 } from "./constants.js";
 

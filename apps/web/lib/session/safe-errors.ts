@@ -9,6 +9,7 @@ export const SAFE_SESSION_ERROR_MESSAGES: Record<SessionErrorCode, string> = {
   not_found: "Session not found.",
   payload_too_large: "Request payload too large.",
   forbidden_payload: "Request payload is not allowed.",
+  invalid_request: "Invalid session event.",
   backend_unavailable: "Session service is temporarily unavailable.",
   server_misconfigured: "Session service is not configured on the server.",
   session_backend_unavailable: "Session service is temporarily unavailable.",

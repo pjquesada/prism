@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
+  AUDIO_FEATURE_ENVELOPE_STALE_MS,
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
@@ -15,7 +17,7 @@ import {
   type SessionMessage,
   type SessionSnapshot,
 } from "@prism/contracts";
-import { generatePairingCode } from "@prism/sync-engine";
+import { assertPayloadSize, generatePairingCode } from "@prism/sync-engine";
 
 import { getSessionSigningSecret } from "@/lib/session/config";
 import {
@@ -48,6 +50,7 @@ type StoredSession = {
   pairing: StoredPairing | null;
   credentials: Map<string, StoredCredential>;
   seq: number;
+  lastFeatureFrameSeq: number;
   listeners: Set<(message: SessionMessage) => void>;
 };
 
@@ -216,6 +219,7 @@ export function createGuestSession(input: {
     },
     credentials: new Map([[hostDeviceId, credential]]),
     seq: 1,
+    lastFeatureFrameSeq: -1,
     listeners: new Set(),
   };
   getStore().sessions.set(sessionId, stored);
@@ -475,12 +479,33 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
     "session.patch",
     "handoff.request",
     "handoff.accept",
+    "audio.features",
   ]);
   if (controllerOnly.has(message.type) && cred.role === "display") {
     throw new SessionServiceError("unauthorized", "Displays cannot publish control events.", 401);
   }
 
   const now = nowIso();
+
+  if (message.type === "audio.features") {
+    const age = Date.now() - message.payload.timestampMs;
+    if (age > AUDIO_FEATURE_ENVELOPE_STALE_MS || age < -5_000) {
+      throw new SessionServiceError("invalid_request", "Stale feature envelope.", 400);
+    }
+    if (message.payload.frameSeq <= session.lastFeatureFrameSeq) {
+      throw new SessionServiceError("invalid_request", "Out-of-order feature envelope.", 400);
+    }
+    assertPayloadSize(message.payload, AUDIO_FEATURE_ENVELOPE_MAX_BYTES);
+    session.lastFeatureFrameSeq = message.payload.frameSeq;
+    const stampedFeatures: SessionMessage = {
+      ...message,
+      seq: session.seq,
+      sentAt: now,
+    };
+    publish(session, stampedFeatures);
+    return stampedFeatures;
+  }
+
   const seq = nextSeq(session);
   let stamped: SessionMessage = { ...message, seq, sentAt: now };
 

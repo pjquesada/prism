@@ -19,6 +19,7 @@ import {
   qualityCaps,
   type AdaptiveQualityManager as AdaptiveQualityManagerType,
 } from "./adaptive-quality.js";
+import { applyVisualizerResize, observeElementSize, VISUALIZER_HOST_FILL_STYLE } from "./resize.js";
 import {
   applyCameraMode,
   clearScenePlugins,
@@ -123,16 +124,44 @@ function PluginRuntime({
   const lastFrameMs = useRef(typeof performance !== "undefined" ? performance.now() : 0);
   const mountedPluginId = useRef<string | null>(null);
 
-  // Capture host handles once for external resize / remount helpers.
+  // Capture host handles and keep camera / backing store in sync with the R3F container.
   useEffect(() => {
+    const width = Math.max(1, size.width);
+    const height = Math.max(1, size.height);
     handlesRef.current = {
       scene,
       camera,
       renderer: gl,
-      width: size.width,
-      height: size.height,
+      width,
+      height,
     };
-  }, [scene, camera, gl, size.width, size.height, handlesRef]);
+    const tier = adaptiveEnabled ? adaptive.getEffectiveTier() : quality;
+    const caps = qualityCaps(tier);
+    const dpr =
+      typeof window !== "undefined" ? clampDpr(window.devicePixelRatio || 1, tier) : caps.dprCap;
+    applyVisualizerResize({
+      renderer: gl,
+      camera,
+      cameraMode: plugin.preferredCamera ?? "perspective",
+      cssWidth: width,
+      cssHeight: height,
+      devicePixelRatio: dpr,
+      dprCap: caps.dprCap,
+    });
+    instanceRef.current?.resize(width, height);
+  }, [
+    scene,
+    camera,
+    gl,
+    size.width,
+    size.height,
+    handlesRef,
+    instanceRef,
+    plugin.preferredCamera,
+    adaptive,
+    adaptiveEnabled,
+    quality,
+  ]);
 
   // Mount / remount plugin in-place when plugin identity changes — never remount Canvas.
   useEffect(() => {
@@ -278,21 +307,28 @@ export function VisualizerCanvas({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const { width, height } = entry.contentRect;
+    return observeElementSize(el, (width, height) => {
       const w = Math.max(1, width);
       const h = Math.max(1, height);
-      if (handlesRef.current) {
-        handlesRef.current.width = w;
-        handlesRef.current.height = h;
-        applyCameraMode(handlesRef.current.camera, plugin.preferredCamera ?? "perspective", w, h);
-      }
+      const handles = handlesRef.current;
+      if (!handles) return;
+      handles.width = w;
+      handles.height = h;
+      const tier = adaptiveRef.current.getEffectiveTier();
+      const caps = qualityCaps(tier);
+      const dpr =
+        typeof window !== "undefined" ? clampDpr(window.devicePixelRatio || 1, tier) : caps.dprCap;
+      applyVisualizerResize({
+        renderer: handles.renderer,
+        camera: handles.camera,
+        cameraMode: plugin.preferredCamera ?? "perspective",
+        cssWidth: w,
+        cssHeight: h,
+        devicePixelRatio: dpr,
+        dprCap: caps.dprCap,
+      });
       instanceRef.current?.resize(w, h);
     });
-    ro.observe(el);
-    return () => ro.disconnect();
   }, [plugin.preferredCamera]);
 
   useEffect(() => {
@@ -317,15 +353,25 @@ export function VisualizerCanvas({
   return (
     <div
       ref={containerRef}
-      className={className}
-      style={{ position: "relative", width: "100%", height: "100%", minHeight: "16rem", ...style }}
+      className={["prism-visualizer-host", className].filter(Boolean).join(" ")}
+      style={{
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+        ...style,
+      }}
       data-visualizer={plugin.id}
+      data-testid="visualizer-host"
     >
       <Canvas
         camera={{ position: [0, 0, 8], fov: 50, near: 0.1, far: 200 }}
         dpr={1}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
-        style={{ width: "100%", height: "100%", display: "block" }}
+        resize={{ scroll: false, debounce: 0, offsetSize: true }}
+        style={{ ...VISUALIZER_HOST_FILL_STYLE }}
       >
         <color attach="background" args={["#061018"]} />
         <PluginRuntime

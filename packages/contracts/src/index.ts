@@ -48,6 +48,21 @@ export {
 } from "./presets.js";
 
 export {
+  AUDIO_FEATURE_ENVELOPE_DECAY_START_MS,
+  AUDIO_FEATURE_ENVELOPE_INTERVAL_MS,
+  AUDIO_FEATURE_ENVELOPE_LEVEL_COUNT,
+  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
+  AUDIO_FEATURE_ENVELOPE_MAX_HZ,
+  AUDIO_FEATURE_ENVELOPE_SILENCE_MS,
+  AUDIO_FEATURE_ENVELOPE_STALE_MS,
+  audioFeatureEnvelopeSchema,
+  audioFeatureEnvelopeToFrame,
+  audioFeatureFrameToEnvelope,
+  createSilentFeatureEnvelope,
+  type AudioFeatureEnvelope,
+} from "./features.js";
+
+export {
   FORBIDDEN_SESSION_PAYLOAD_KEYS,
   GUEST_CREDENTIAL_TTL_MS,
   MAX_PRESET_PARAMS_JSON_BYTES,

@@ -6,6 +6,7 @@ export type SessionErrorCode =
   | "not_found"
   | "payload_too_large"
   | "forbidden_payload"
+  | "invalid_request"
   /** @deprecated Prefer session_backend_unavailable or server_misconfigured */
   | "backend_unavailable"
   | "server_misconfigured"

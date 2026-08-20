@@ -20,6 +20,9 @@ export type SeqDecision =
  * Older snapshots are ignored so they cannot overwrite newer visualizer state.
  */
 export function decideSeq(state: SeqState, message: SessionMessage): SeqDecision {
+  if (message.type === "audio.features") {
+    return { action: "apply", next: state };
+  }
   if (message.type === "session.snapshot") {
     if (message.seq < state.lastAppliedSeq) {
       return { action: "ignore_stale", next: state };

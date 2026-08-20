@@ -90,6 +90,109 @@ describe("memory session store", () => {
     expect(() => authorizeCredential(created.pairingCode)).toThrow(/Unauthorized/);
   });
 
+  it("broadcasts compact Live Listen envelopes without persisting bands", () => {
+    const created = createGuestSession({ role: "controller" });
+    const stamped = publishAuthorizedMessage(created.credential.token, {
+      type: "audio.features",
+      seq: 0,
+      sentAt: new Date().toISOString(),
+      sessionId: created.snapshot.session.id,
+      deviceId: created.credential.deviceId,
+      payload: {
+        frameSeq: 1,
+        timestampMs: Date.now(),
+        rms: 0.2,
+        energy: 0.4,
+        bass: 0.3,
+        mid: 0.2,
+        high: 0.1,
+        levels: [0.1, 0.2, 0.3, 0.2, 0.1, 0.1, 0.05, 0.02],
+        onset: true,
+        beatStrength: 0.5,
+        centroid: 0.4,
+      },
+    });
+    expect(stamped.type).toBe("audio.features");
+    expect(JSON.stringify(stamped)).not.toMatch(/"bands"|pcm|fft|microphone|MediaStream/);
+    expect(getSnapshotForCredential(created.credential.token).preset.visualizerId).toBe("spectrum");
+  });
+
+  it("rejects Live Listen envelopes from a display credential", () => {
+    const created = createGuestSession({ role: "controller" });
+    const joined = joinWithPairingCode({
+      code: created.pairingCode,
+      role: "display",
+      ip: "10.0.0.22",
+    });
+    expect(() =>
+      publishAuthorizedMessage(joined.credential.token, {
+        type: "audio.features",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: joined.credential.deviceId,
+        payload: {
+          frameSeq: 1,
+          timestampMs: Date.now(),
+          rms: 0,
+          energy: 0,
+          bass: 0,
+          mid: 0,
+          high: 0,
+          levels: [0, 0, 0, 0, 0, 0, 0, 0],
+          onset: false,
+          beatStrength: 0,
+          centroid: 0,
+        },
+      }),
+    ).toThrow(/Displays cannot publish/);
+  });
+
+  it("rejects stale and out-of-order Live Listen envelopes", () => {
+    const created = createGuestSession({ role: "controller" });
+    const envelope = {
+      frameSeq: 2,
+      timestampMs: Date.now(),
+      rms: 0.1,
+      energy: 0.2,
+      bass: 0.1,
+      mid: 0.1,
+      high: 0.1,
+      levels: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+      onset: false,
+      beatStrength: 0,
+      centroid: 0.2,
+    };
+    publishAuthorizedMessage(created.credential.token, {
+      type: "audio.features",
+      seq: 0,
+      sentAt: new Date().toISOString(),
+      sessionId: created.snapshot.session.id,
+      deviceId: created.credential.deviceId,
+      payload: envelope,
+    });
+    expect(() =>
+      publishAuthorizedMessage(created.credential.token, {
+        type: "audio.features",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: created.credential.deviceId,
+        payload: { ...envelope, frameSeq: 1, timestampMs: Date.now() },
+      }),
+    ).toThrow(/Out-of-order/);
+    expect(() =>
+      publishAuthorizedMessage(created.credential.token, {
+        type: "audio.features",
+        seq: 0,
+        sentAt: new Date().toISOString(),
+        sessionId: created.snapshot.session.id,
+        deviceId: created.credential.deviceId,
+        payload: { ...envelope, frameSeq: 3, timestampMs: Date.now() - 5_000 },
+      }),
+    ).toThrow(/Stale/);
+  });
+
   it("broadcasts visual intent without feature bands", () => {
     const created = createGuestSession({ role: "controller" });
     const stamped = publishAuthorizedMessage(created.credential.token, {

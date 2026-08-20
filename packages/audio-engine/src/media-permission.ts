@@ -1,4 +1,5 @@
-export type LiveListenFailureStatus = "denied" | "unavailable" | "unsupported" | "error";
+export type LiveListenFailureStatus =
+  "denied" | "unavailable" | "unsupported" | "inactive" | "error";
 
 export type LiveListenFailure = {
   status: LiveListenFailureStatus;

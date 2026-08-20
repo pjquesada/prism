@@ -24,6 +24,11 @@ export {
   type LiveListenEngineStatus,
 } from "./live-listen-engine.js";
 export {
+  RemoteFeatureInterpolator,
+  silentRemoteEnvelope,
+  type RemoteFeatureIngestResult,
+} from "./remote-features.js";
+export {
   LIVE_LISTEN_AUDIO_CONSTRAINTS,
   canRequestMicrophone,
   classifyGetUserMediaError,

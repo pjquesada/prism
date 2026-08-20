@@ -48,6 +48,7 @@ const liveEngineMock = {
   }),
   pause: vi.fn(async () => undefined),
   dispose: vi.fn(async () => undefined),
+  getStatus: vi.fn(() => "idle"),
   subscribe: vi.fn((listener: (event: unknown) => void) => {
     listeners.add(listener);
     listener({ status: "idle", frame: createSilentFeatureFrame() });
@@ -119,9 +120,13 @@ describe("DemoExperience", () => {
 
   it("starts Live Listen locally and does not keep the Demo Track engine", async () => {
     render(<DemoExperience variant="demo" />);
+    expect(liveEngineMock.start).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("audio-mode-live_listen"));
     expect(engineMock.dispose).toHaveBeenCalled();
     expect(liveEngineMock.start).toHaveBeenCalled();
     expect(screen.getByTestId("audio-mode-live_listen").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("live-listen-privacy").textContent).toMatch(
+      /Microphone audio stays on this device/i,
+    );
   });
 });
