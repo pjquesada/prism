@@ -90,9 +90,9 @@ test.describe("Phase 1E Live Listen", () => {
     await display.getByRole("button", { name: /Join as display/i }).click();
     await expect(display.getByTestId("display-visualizer")).toBeVisible({ timeout: 15_000 });
     await expect(display.getByTestId("display-silent")).toBeVisible();
-    await expect(display.getByRole("button", { name: /Enable audio on this display/i })).toHaveCount(
-      0,
-    );
+    await expect(
+      display.getByRole("button", { name: /Enable audio on this display/i }),
+    ).toHaveCount(0);
 
     const demoBroadcast = controller.waitForRequest((req) => {
       if (req.method() !== "POST" || !req.url().includes("/broadcast")) return false;
@@ -103,7 +103,9 @@ test.describe("Phase 1E Live Listen", () => {
     });
     await controller.getByRole("button", { name: /^Play$/i }).click();
     const demoRequest = await demoBroadcast;
-    expect(demoRequest.postData() ?? "").not.toMatch(/pcm|fft|microphone|MediaStream|frequencyData/);
+    expect(demoRequest.postData() ?? "").not.toMatch(
+      /pcm|fft|microphone|MediaStream|frequencyData/,
+    );
     await expect(display.getByTestId("remote-feature-energy")).toBeVisible({ timeout: 15_000 });
 
     await controller.getByTestId("audio-mode-live_listen").click();

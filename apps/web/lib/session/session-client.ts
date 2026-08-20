@@ -553,7 +553,10 @@ export class SessionClient {
     }, PING_INTERVAL_MS);
   }
 
-  private applyRaw(raw: unknown, source: "local" | "realtime" = "local"): { requestSnapshot: boolean } {
+  private applyRaw(
+    raw: unknown,
+    source: "local" | "realtime" = "local",
+  ): { requestSnapshot: boolean } {
     if (source === "realtime") {
       this.lastRealtimeEventAt = Date.now();
     }

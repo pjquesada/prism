@@ -20,10 +20,7 @@ import {
   type AdaptiveQualityManager as AdaptiveQualityManagerType,
 } from "./adaptive-quality.js";
 import { applyVisualizerResize, observeElementSize, VISUALIZER_HOST_FILL_STYLE } from "./resize.js";
-import {
-  acquireAnimationLoop,
-  noteRenderFrame,
-} from "./perf-instrumentation.js";
+import { acquireAnimationLoop, noteRenderFrame } from "./perf-instrumentation.js";
 import {
   applyCameraMode,
   clearScenePlugins,
@@ -282,7 +279,7 @@ function PluginRuntime({
     props.preset.params = latest.current.params;
     props.quality = tier;
     props.reducedMotion = latest.current.reducedMotion;
-    props.albumArtUrl = latest.current.albumArtUrl;
+    props.albumArtUrl = latest.current.albumArtUrl ?? undefined;
     instance.update(props);
   });
 

@@ -17,77 +17,70 @@ import {
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
-const {
-  DemoTrackEngine,
-  demoEngineMock,
-  demoListeners,
-  liveEngineMock,
-  liveListeners,
-} = vi.hoisted(() => {
-  const silent = {
-    timestampMs: 0,
-    rms: 0,
-    peak: 0,
-    bpmEstimate: null,
-    beatPhase: 0,
-    bands: Array.from({ length: 32 }, () => 0),
-    energy: 0,
-    onset: false,
-    bass: 0,
-    mid: 0,
-    high: 0,
-  };
-  const demoListeners = new Set<(event: unknown) => void>();
-  const liveListeners = new Set<(event: unknown) => void>();
-  const demoEngineMock = {
-    prepare: vi.fn(async () => undefined),
-    play: vi.fn(async () => undefined),
-    pause: vi.fn(async () => undefined),
-    dispose: vi.fn(async () => undefined),
-    getStatus: vi.fn(() => "ready"),
-    getPositionMs: vi.fn(() => 0),
-    getPlaybackRate: vi.fn(() => 1),
-    subscribe: vi.fn((listener: (event: unknown) => void) => {
-      demoListeners.add(listener);
-      listener({ status: "ready", frame: silent });
-      return () => demoListeners.delete(listener);
-    }),
-  };
-  const liveEngineMock = {
-    start: vi.fn(async () => undefined),
-    pause: vi.fn(async () => undefined),
-    dispose: vi.fn(async () => undefined),
-    getStatus: vi.fn(() => "listening"),
-    subscribe: vi.fn((listener: (event: unknown) => void) => {
-      liveListeners.add(listener);
-      listener({ status: "listening", frame: { ...silent, energy: 0.2, rms: 0.2 } });
-      return () => liveListeners.delete(listener);
-    }),
-  };
-  const DemoTrackEngine = vi.fn(function DemoTrackEngine() {
-    return demoEngineMock;
+const { DemoTrackEngine, demoEngineMock, demoListeners, liveEngineMock, liveListeners } =
+  vi.hoisted(() => {
+    const silent = {
+      timestampMs: 0,
+      rms: 0,
+      peak: 0,
+      bpmEstimate: null,
+      beatPhase: 0,
+      bands: Array.from({ length: 32 }, () => 0),
+      energy: 0,
+      onset: false,
+      bass: 0,
+      mid: 0,
+      high: 0,
+    };
+    const demoListeners = new Set<(event: unknown) => void>();
+    const liveListeners = new Set<(event: unknown) => void>();
+    const demoEngineMock = {
+      prepare: vi.fn(async () => undefined),
+      play: vi.fn(async () => undefined),
+      pause: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => "ready"),
+      getPositionMs: vi.fn(() => 0),
+      getPlaybackRate: vi.fn(() => 1),
+      subscribe: vi.fn((listener: (event: unknown) => void) => {
+        demoListeners.add(listener);
+        listener({ status: "ready", frame: silent });
+        return () => demoListeners.delete(listener);
+      }),
+    };
+    const liveEngineMock = {
+      start: vi.fn(async () => undefined),
+      pause: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => "listening"),
+      subscribe: vi.fn((listener: (event: unknown) => void) => {
+        liveListeners.add(listener);
+        listener({ status: "listening", frame: { ...silent, energy: 0.2, rms: 0.2 } });
+        return () => liveListeners.delete(listener);
+      }),
+    };
+    const DemoTrackEngine = vi.fn(function DemoTrackEngine() {
+      return demoEngineMock;
+    });
+    return {
+      DemoTrackEngine,
+      demoEngineMock,
+      demoListeners,
+      liveEngineMock,
+      liveListeners,
+    };
   });
-  return {
-    DemoTrackEngine,
-    demoEngineMock,
-    demoListeners,
-    liveEngineMock,
-    liveListeners,
-  };
-});
 
-vi.mock("@prism/audio-engine", async () => {
-  const actual = await vi.importActual<typeof import("@prism/audio-engine")>("@prism/audio-engine");
+vi.mock("@prism/audio-engine", async (importOriginal) => {
+  const actual = await importOriginal();
   return {
     ...actual,
     DemoTrackEngine,
-    getResourceCounts: actual.getResourceCounts,
-    resetResourceCountsForTests: actual.resetResourceCountsForTests,
   };
 });
 
-vi.mock("@prism/visual-engine", async () => {
-  const actual = await vi.importActual<typeof import("@prism/visual-engine")>("@prism/visual-engine");
+vi.mock("@prism/visual-engine", async (importOriginal) => {
+  const actual = await importOriginal();
   return {
     ...actual,
     VisualizerCanvas: ({
@@ -110,7 +103,10 @@ vi.mock("@prism/visualizers", () => ({
   }),
 }));
 
-import { getResourceCounts as realGetResourceCounts, resetResourceCountsForTests as realReset } from "@prism/audio-engine";
+import {
+  getResourceCounts as realGetResourceCounts,
+  resetResourceCountsForTests as realReset,
+} from "@prism/audio-engine";
 import { SessionVisualizerStage } from "@/components/session/session-visualizer-stage";
 
 function snapshot(audioMode: "demo_track" | "live_listen" = "demo_track"): SessionSnapshot {
@@ -324,7 +320,9 @@ describe("SessionVisualizerStage audio ownership", () => {
     });
 
     expect(stageRenders).toBe(rendersAfterMount);
-    expect(screen.getByTestId("remote-feature-energy").getAttribute("data-energy")).not.toBe("0.000");
+    expect(screen.getByTestId("remote-feature-energy").getAttribute("data-energy")).not.toBe(
+      "0.000",
+    );
   });
 
   it("disposes the Demo Track engine when switching to Live Listen", () => {

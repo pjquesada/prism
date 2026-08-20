@@ -33,14 +33,14 @@ describe("RemoteFeatureInterpolator", () => {
     const interp = new RemoteFeatureInterpolator();
     const now = 3_000_000;
     interp.ingest({ ...createSilentFeatureEnvelope(1, now), energy: 1, rms: 1, bass: 1 }, now);
-    const a = interp.sample(now + 8);
-    const b = interp.sample(now + 24);
-    const c = interp.sample(now + 48);
-    expect(a.energy).toBeGreaterThan(0);
-    expect(a.energy).toBeLessThan(1);
-    expect(b.energy).toBeGreaterThan(a.energy);
-    expect(c.energy).toBeGreaterThan(b.energy);
-    expect(c.energy).toBeLessThanOrEqual(1);
+    const a = interp.sample(now + 8).energy;
+    const b = interp.sample(now + 24).energy;
+    const c = interp.sample(now + 48).energy;
+    expect(a).toBeGreaterThan(0);
+    expect(a).toBeLessThan(1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+    expect(c).toBeLessThanOrEqual(1);
   });
 
   it("decays toward silence when frames stop", () => {
@@ -49,11 +49,11 @@ describe("RemoteFeatureInterpolator", () => {
     interp.ingest({ ...createSilentFeatureEnvelope(1, now), energy: 1, rms: 1, bass: 1 }, now);
     interp.sample(now + 16);
     interp.sample(now + 32);
-    const live = interp.sample(now + 48);
-    expect(live.energy).toBeGreaterThan(0.4);
-    const decayed = interp.sample(now + 900);
-    expect(decayed.energy).toBeLessThan(0.05);
-    expect(decayed.energy).toBeLessThan(live.energy);
+    const liveEnergy = interp.sample(now + 48).energy;
+    expect(liveEnergy).toBeGreaterThan(0.4);
+    const decayedEnergy = interp.sample(now + 900).energy;
+    expect(decayedEnergy).toBeLessThan(0.05);
+    expect(decayedEnergy).toBeLessThan(liveEnergy);
   });
 
   it("rejects oversized payloads", () => {

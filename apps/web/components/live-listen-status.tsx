@@ -76,8 +76,7 @@ export function LiveListenStatusPanel({
     status === "inactive" ||
     status === "error";
 
-  const detail =
-    status === "listening" ? (hasSound ? "sound" : "waiting") : status;
+  const detail = status === "listening" ? (hasSound ? "sound" : "waiting") : status;
   const clamped = Math.min(1, Math.max(0, inputLevel));
 
   return (

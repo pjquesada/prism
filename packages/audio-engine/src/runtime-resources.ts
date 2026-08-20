@@ -1,8 +1,5 @@
 export type PrismResourceKind =
-  | "audioContexts"
-  | "mediaSources"
-  | "animationLoops"
-  | "realtimeSubscriptions";
+  "audioContexts" | "mediaSources" | "animationLoops" | "realtimeSubscriptions";
 
 export type PrismResourceCounts = Record<PrismResourceKind, number>;
 

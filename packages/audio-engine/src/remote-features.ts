@@ -11,7 +11,7 @@ import {
   type AudioFeatureFrame,
 } from "@prism/contracts";
 
-import { ATTACK_COEFF, RELEASE_COEFF, smoothToward } from "./feature-math.js";
+import { ATTACK_COEFF, RELEASE_COEFF } from "./constants.js";
 
 export type RemoteFeatureIngestResult =
   | { ok: true; envelope: AudioFeatureEnvelope }

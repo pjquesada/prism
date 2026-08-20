@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { acquireResource, getResourceCounts, resetResourceCountsForTests } from "./runtime-resources.js";
+import {
+  acquireResource,
+  getResourceCounts,
+  resetResourceCountsForTests,
+} from "./runtime-resources.js";
 
 describe("runtime resource counters", () => {
   it("tracks acquire/release without leaking after dispose", () => {

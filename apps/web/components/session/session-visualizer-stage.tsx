@@ -23,7 +23,11 @@ import {
 } from "@prism/audio-engine";
 import { VisualizerCanvas, noteDroppedOrStaleFrame } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
-import { applyDisplayModeParams, displayDeviceIndex, type SyncEngineState } from "@prism/sync-engine";
+import {
+  applyDisplayModeParams,
+  displayDeviceIndex,
+  type SyncEngineState,
+} from "@prism/sync-engine";
 
 import { LiveListenStatusPanel } from "@/components/live-listen-status";
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
@@ -85,9 +89,7 @@ export function SessionVisualizerStage({
   const remoteEnergyElRef = useRef<HTMLSpanElement | null>(null);
   const meterFillRef = useRef<HTMLDivElement | null>(null);
   const publishFeaturesRef = useRef(publishFeatures);
-  publishFeaturesRef.current = publishFeatures;
   const isAudioAuthorityRef = useRef(isAudioAuthority);
-  isAudioAuthorityRef.current = isAudioAuthority;
   const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
     const publish = publishFeaturesRef.current;
     if (!isAudioAuthorityRef.current || !publish) return;
@@ -105,6 +107,11 @@ export function SessionVisualizerStage({
   const [liveError, setLiveError] = useState<string | undefined>();
   const [hasSound, setHasSound] = useState(false);
 
+  useEffect(() => {
+    publishFeaturesRef.current = publishFeatures;
+    isAudioAuthorityRef.current = isAudioAuthority;
+  }, [publishFeatures, isAudioAuthority]);
+
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
   const visualizerId: VisualizerId =
     preset?.visualizerId === "dreamscape" ? "spectrum" : (preset?.visualizerId ?? "spectrum");
@@ -113,7 +120,8 @@ export function SessionVisualizerStage({
   const liveListen = audioMode === "live_listen";
   const isPlaying = snapshot?.playback.isPlaying ?? false;
   const sessionId = snapshot?.session.id;
-  const ready = !isAudioAuthority || engineReady || liveStatus === "listening" || liveStatus === "requesting";
+  const ready =
+    !isAudioAuthority || engineReady || liveStatus === "listening" || liveStatus === "requesting";
   const deviceIndex = snapshot ? displayDeviceIndex(snapshot.devices, sync.localDeviceId ?? "") : 0;
   const params = useMemo(() => {
     const base = parseVisualizerParams(
@@ -162,7 +170,7 @@ export function SessionVisualizerStage({
   useEffect(() => {
     if (!sessionId || !liveListen || !isAudioAuthority || !liveListenEngine) return;
     const engine = liveListenEngine;
-    lastLiveStatusRef.current = engine.getStatus();
+    lastLiveStatusRef.current = "idle";
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
       writeMeter(meterFillRef.current, event.frame.energy);
@@ -176,7 +184,9 @@ export function SessionVisualizerStage({
         setLiveStatus(event.status);
         setLiveError(event.errorMessage);
         setEngineReady(
-          event.status === "listening" || event.status === "paused" || event.status === "requesting",
+          event.status === "listening" ||
+            event.status === "paused" ||
+            event.status === "requesting",
         );
         setNeedsGesture(event.status === "idle" || event.status === "inactive");
       }

@@ -58,11 +58,7 @@ describe("LiveListenStatusPanel", () => {
 
   it("surfaces requesting permission without recovery actions", () => {
     render(
-      <LiveListenStatusPanel
-        status="requesting"
-        onRetry={vi.fn()}
-        onUseDemoTrack={vi.fn()}
-      />,
+      <LiveListenStatusPanel status="requesting" onRetry={vi.fn()} onUseDemoTrack={vi.fn()} />,
     );
     expect(screen.getByTestId("live-listen-status").textContent).toMatch(/requesting microphone/i);
     expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();

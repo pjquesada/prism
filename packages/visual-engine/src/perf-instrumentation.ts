@@ -39,11 +39,16 @@ const state: PerfState = {
 
 let resourceSource: (() => PrismResourceSnapshot) | null = null;
 
+function readProcessEnv(name: string): string | undefined {
+  const runtime = globalThis as { process?: { env?: Record<string, string | undefined> } };
+  return runtime.process?.env?.[name];
+}
+
 function perfEnabled(): boolean {
-  if (typeof process !== "undefined" && process.env.NODE_ENV === "production") {
-    return process.env.NEXT_PUBLIC_PRISM_PERF === "1";
+  if (readProcessEnv("NODE_ENV") === "production") {
+    return readProcessEnv("NEXT_PUBLIC_PRISM_PERF") === "1";
   }
-  return process.env.NEXT_PUBLIC_PRISM_PERF !== "0";
+  return readProcessEnv("NEXT_PUBLIC_PRISM_PERF") !== "0";
 }
 
 export function isPrismPerfEnabled(): boolean {
@@ -65,7 +70,9 @@ export function acquireAnimationLoop(): () => void {
   };
 }
 
-export function noteRenderFrame(nowMs = typeof performance !== "undefined" ? performance.now() : 0): void {
+export function noteRenderFrame(
+  nowMs = typeof performance !== "undefined" ? performance.now() : 0,
+): void {
   if (!perfEnabled()) return;
   state.frames += 1;
   if (state.lastFpsMs === 0) state.lastFpsMs = nowMs;
