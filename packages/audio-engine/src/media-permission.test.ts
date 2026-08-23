@@ -22,6 +22,7 @@ describe("classifyGetUserMediaError", () => {
       Object.assign(new Error("Requested device not found"), { name: "NotFoundError" }),
     );
     expect(failure.status).toBe("unavailable");
+    expect(failure.message).toMatch(/Capture Music|Demo Track/i);
   });
 
   it("maps insecure-context failures to unsupported", () => {

@@ -3,11 +3,14 @@
 import Link from "next/link";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BrowserCaptureEngine,
+  BROWSER_CAPTURE_SOUND_THRESHOLD,
   DemoTrackEngine,
   LiveListenEngine,
   LIVE_LISTEN_SOUND_THRESHOLD,
   getResourceCounts,
   silentFrame,
+  type BrowserCaptureEngineStatus,
   type DemoTrackEngineStatus,
   type LiveListenEngineStatus,
 } from "@prism/audio-engine";
@@ -16,7 +19,6 @@ import {
   defaultParamsForVisualizer,
   parseVisualizerParams,
   type AudioFeatureFrame,
-  type AudioMode,
   type PresetConfig,
   type QualityTier,
   type VisualizerId,
@@ -24,8 +26,12 @@ import {
 import { VisualizerCanvas, registerPerfResourceSource } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
 
-import { AudioModeSelector } from "@/components/audio-mode-selector";
-import { LiveListenStatusPanel } from "@/components/live-listen-status";
+import {
+  AudioModeSelector,
+  type CaptureInputOption,
+} from "@/components/audio-mode-selector";
+import { CaptureCompatibilityNote } from "@/components/capture-compatibility-note";
+import { CaptureMusicStatusPanel } from "@/components/capture-music-status";
 import { VisualizerSelector } from "@/components/visualizer-selector";
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import {
@@ -44,6 +50,7 @@ import {
 } from "@/lib/local-artwork";
 import { useGuestPresetStore } from "@/lib/use-guest-preset-store";
 import { isLiveListenEnabled } from "@/lib/live-listen-enabled";
+import { writeCaptureInputPreference } from "@/lib/capture-input";
 
 registerPerfResourceSource(getResourceCounts);
 
@@ -51,6 +58,8 @@ const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const DEMO_TRACK_TITLE = "Prism Demo Loop";
 const DEMO_TRACK_DESCRIPTION =
   "Original synthetic royalty-free loop generated for Prism (16s, ~96 BPM).";
+const CAPTURE_PRIVACY =
+  "Audio analysis stays on this device. Prism shares only anonymous visualization levels with your paired display—never your audio or screen.";
 
 const QUALITY_OPTIONS: { id: QualityTier | "auto"; label: string }[] = [
   { id: "auto", label: "Auto" },
@@ -69,19 +78,49 @@ type DemoExperienceProps = {
   initialPresetId?: string;
 };
 
+type CaptureStatus = BrowserCaptureEngineStatus | LiveListenEngineStatus;
+
 function statusLabel(
-  audioMode: AudioMode,
+  input: CaptureInputOption,
   demoStatus: DemoTrackEngineStatus,
-  liveStatus: LiveListenEngineStatus,
+  captureStatus: CaptureStatus,
 ): string {
-  if (audioMode === "live_listen") {
-    switch (liveStatus) {
+  if (input === "browser_capture") {
+    switch (captureStatus) {
+      case "requesting":
+        return "Requesting browser permission…";
+      case "waiting":
+        return "Connected — waiting for audio";
+      case "listening":
+        return "Connected — music detected";
+      case "paused":
+        return "Capture Music paused";
+      case "no_audio":
+        return "Shared source has no audio";
+      case "ended":
+        return "Sharing stopped";
+      case "denied":
+        return "Capture blocked or denied";
+      case "unsupported":
+        return "Browser/system audio unsupported";
+      case "inactive":
+        return "Audio context suspended";
+      case "error":
+        return "Capture Music error";
+      case "idle":
+      default:
+        return "Choose music source";
+    }
+  }
+  if (input === "microphone") {
+    switch (captureStatus) {
       case "requesting":
         return "Waiting for microphone permission…";
       case "listening":
-        return "Live Listen — local microphone analysis only";
+      case "waiting":
+        return "Microphone — local analysis only";
       case "paused":
-        return "Live Listen paused";
+        return "Microphone paused";
       case "denied":
         return "Microphone permission denied";
       case "unavailable":
@@ -89,12 +128,12 @@ function statusLabel(
       case "unsupported":
         return "Microphone is not available in this browser";
       case "inactive":
-        return "Audio context is inactive — tap Live Listen again";
+        return "Audio context is inactive — tap Microphone again";
       case "error":
-        return "Live Listen error";
+        return "Microphone error";
       case "idle":
       default:
-        return "Live Listen idle";
+        return "Microphone idle";
     }
   }
   switch (demoStatus) {
@@ -118,20 +157,32 @@ function statusLabel(
   }
 }
 
+function inputTitle(input: CaptureInputOption): string {
+  switch (input) {
+    case "browser_capture":
+      return "Capture Music";
+    case "microphone":
+      return "Microphone";
+    default:
+      return "Demo Track";
+  }
+}
+
 export function DemoExperience({
   variant,
   quality = "high",
   initialVisualizerId = "spectrum",
   initialPresetId,
 }: DemoExperienceProps) {
-  const liveListenEnabled = isLiveListenEnabled();
-  const engineRef = useRef<DemoTrackEngine | null>(null);
-  const liveEngineRef = useRef<LiveListenEngine | null>(null);
+  const captureEnabled = isLiveListenEnabled();
+  const demoEngineRef = useRef<DemoTrackEngine | null>(null);
+  const browserEngineRef = useRef<BrowserCaptureEngine | null>(null);
+  const micEngineRef = useRef<LiveListenEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(silentFrame());
-  const [audioMode, setAudioMode] = useState<AudioMode>("demo_track");
+  const [captureInput, setCaptureInput] = useState<CaptureInputOption>("demo_track");
   const [status, setStatus] = useState<DemoTrackEngineStatus>("idle");
-  const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
-  const lastLiveStatusRef = useRef<LiveListenEngineStatus>("idle");
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus>("idle");
+  const lastCaptureStatusRef = useRef<CaptureStatus>("idle");
   const lastDemoStatusRef = useRef<DemoTrackEngineStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [hud, setHud] = useState({ energy: 0, onset: false, bass: 0, mid: 0, high: 0 });
@@ -157,7 +208,15 @@ export function DemoExperience({
   const mergedPresets = useMemo(() => listMergedPresets(userPresets), [userPresets]);
   const activePreset = mergedPresets.find((p) => p.id === activePresetId) ?? mergedPresets[0];
 
-  // Apply deep-linked preset once client snapshot is available (after hydration).
+  const disposeCaptureEngines = () => {
+    const browser = browserEngineRef.current;
+    const mic = micEngineRef.current;
+    browserEngineRef.current = null;
+    micEngineRef.current = null;
+    if (browser) void browser.dispose();
+    if (mic) void mic.dispose();
+  };
+
   useEffect(() => {
     if (appliedInitialPreset.current) return;
     if (!initialPresetId) {
@@ -177,12 +236,12 @@ export function DemoExperience({
   }, [initialPresetId, userPresets]);
 
   useEffect(() => {
-    if (audioMode !== "demo_track") {
-      engineRef.current = null;
+    if (captureInput !== "demo_track") {
+      demoEngineRef.current = null;
       return;
     }
     const engine = new DemoTrackEngine({ trackUrl: DEMO_TRACK_URL, loop: true });
-    engineRef.current = engine;
+    demoEngineRef.current = engine;
     let lastHud = 0;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
@@ -208,33 +267,37 @@ export function DemoExperience({
     return () => {
       unsubscribe();
       void engine.dispose();
-      engineRef.current = null;
+      demoEngineRef.current = null;
     };
-  }, [audioMode]);
+  }, [captureInput]);
 
   useEffect(() => {
     return () => {
-      void liveEngineRef.current?.dispose();
-      liveEngineRef.current = null;
+      disposeCaptureEngines();
     };
   }, []);
 
   useEffect(() => {
-    if (audioMode !== "live_listen") {
-      const existing = liveEngineRef.current;
-      liveEngineRef.current = null;
-      if (existing) void existing.dispose();
+    if (captureInput !== "browser_capture" && captureInput !== "microphone") {
+      disposeCaptureEngines();
       return;
     }
-    const engine = liveEngineRef.current;
+
+    const engine =
+      captureInput === "browser_capture" ? browserEngineRef.current : micEngineRef.current;
     if (!engine) return;
-    lastLiveStatusRef.current = "idle";
+
+    lastCaptureStatusRef.current = "idle";
     let lastHud = 0;
+    const threshold =
+      captureInput === "browser_capture"
+        ? BROWSER_CAPTURE_SOUND_THRESHOLD
+        : LIVE_LISTEN_SOUND_THRESHOLD;
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
-      if (event.status !== lastLiveStatusRef.current) {
-        lastLiveStatusRef.current = event.status;
-        setLiveStatus(event.status);
+      if (event.status !== lastCaptureStatusRef.current) {
+        lastCaptureStatusRef.current = event.status;
+        setCaptureStatus(event.status);
         setErrorMessage(event.errorMessage);
       }
       const now = typeof performance !== "undefined" ? performance.now() : 0;
@@ -248,11 +311,12 @@ export function DemoExperience({
           high: event.frame.high,
         });
       }
+      void threshold;
     });
     return () => {
       unsubscribe();
     };
-  }, [audioMode]);
+  }, [captureInput]);
 
   useEffect(() => {
     return () => {
@@ -272,21 +336,64 @@ export function DemoExperience({
     setPresetName(preset.isBuiltIn ? `${preset.name} Edit` : preset.name);
   };
 
-  const busy = audioMode === "demo_track" ? status === "loading" : liveStatus === "requesting";
+  const selectCaptureInput = (option: CaptureInputOption) => {
+    setErrorMessage(undefined);
+    writeCaptureInputPreference(option);
+    if (option === "demo_track") {
+      disposeCaptureEngines();
+      setCaptureInput(option);
+      return;
+    }
+    disposeCaptureEngines();
+    setCaptureStatus("idle");
+    if (option === "browser_capture") {
+      const engine = new BrowserCaptureEngine();
+      browserEngineRef.current = engine;
+      setCaptureInput(option);
+      void engine.start();
+      return;
+    }
+    const engine = new LiveListenEngine();
+    micEngineRef.current = engine;
+    setCaptureInput(option);
+    void engine.start();
+  };
+
+  const stopCapture = () => {
+    const browser = browserEngineRef.current;
+    const mic = micEngineRef.current;
+    if (browser) {
+      void browser.stop();
+      return;
+    }
+    if (mic) void mic.pause();
+  };
+
+  const busy =
+    captureInput === "demo_track" ? status === "loading" : captureStatus === "requesting";
+  const captureActive =
+    captureStatus === "listening" || captureStatus === "waiting" || captureStatus === "paused";
   const canPlay =
-    audioMode === "live_listen"
-      ? liveStatus === "paused" || liveStatus === "idle"
+    captureInput === "browser_capture" || captureInput === "microphone"
+      ? captureStatus === "paused" || captureStatus === "idle" || captureStatus === "ended"
       : status === "ready" || status === "needs_gesture" || status === "paused";
-  const canPause = audioMode === "live_listen" ? liveStatus === "listening" : status === "playing";
+  const canPause =
+    captureInput === "browser_capture" || captureInput === "microphone"
+      ? captureStatus === "listening" || captureStatus === "waiting"
+      : status === "playing";
   const showUnsupported =
-    audioMode === "demo_track" ? status === "unsupported" : liveStatus === "unsupported";
-  const showError = audioMode === "demo_track" ? status === "error" : false;
+    captureInput === "demo_track" ? status === "unsupported" : captureStatus === "unsupported";
+  const showError = captureInput === "demo_track" ? status === "error" : false;
   const albumArtUrl =
     visualizerId === "album_world"
       ? artwork.status === "ready"
         ? artwork.objectUrl
         : PLACEHOLDER_ARTWORK_PATH
       : null;
+  const soundThreshold =
+    captureInput === "browser_capture"
+      ? BROWSER_CAPTURE_SOUND_THRESHOLD
+      : LIVE_LISTEN_SOUND_THRESHOLD;
 
   const canvasQuality = qualityMode === "auto" ? quality : qualityMode;
 
@@ -296,10 +403,8 @@ export function DemoExperience({
         <div>
           <p className="text-sm uppercase tracking-[0.14em] text-prism-aurora">
             {variant === "combined"
-              ? `Combined · ${audioMode === "live_listen" ? "Live Listen" : "Demo Track"}`
-              : audioMode === "live_listen"
-                ? "Live Listen"
-                : "Demo Track"}
+              ? `Combined · ${inputTitle(captureInput)}`
+              : inputTitle(captureInput)}
           </p>
           <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-prism-foam sm:text-5xl">
             {plugin.label}
@@ -315,23 +420,36 @@ export function DemoExperience({
             className="prism-btn prism-btn-primary"
             disabled={busy || showUnsupported || (!canPlay && !canPause && status !== "idle")}
             onClick={() => {
-              if (audioMode === "live_listen") {
+              if (captureInput === "browser_capture") {
                 if (canPause) {
-                  void liveEngineRef.current?.pause();
+                  void browserEngineRef.current?.pause();
                   return;
                 }
-                void liveEngineRef.current?.start();
+                void browserEngineRef.current?.start();
+                return;
+              }
+              if (captureInput === "microphone") {
+                if (canPause) {
+                  void micEngineRef.current?.pause();
+                  return;
+                }
+                void micEngineRef.current?.start();
                 return;
               }
               if (canPause) {
-                void engineRef.current?.pause();
+                void demoEngineRef.current?.pause();
                 return;
               }
-              void engineRef.current?.play();
+              void demoEngineRef.current?.play();
             }}
           >
-            {canPause ? "Pause" : "Play"}
+            {canPause ? "Pause" : captureInput === "demo_track" ? "Play" : "Start capture"}
           </button>
+          {captureActive ? (
+            <button type="button" className="prism-btn prism-btn-ghost" onClick={stopCapture}>
+              Stop capture
+            </button>
+          ) : null}
           <button
             type="button"
             className="prism-btn prism-btn-ghost"
@@ -354,19 +472,11 @@ export function DemoExperience({
       </div>
 
       <AudioModeSelector
-        value={audioMode}
-        allowLiveListen={liveListenEnabled}
-        onSelect={(mode) => {
-          setErrorMessage(undefined);
-          if (mode === "live_listen") {
-            if (!liveEngineRef.current) {
-              liveEngineRef.current = new LiveListenEngine();
-            }
-            void liveEngineRef.current.start();
-          }
-          setAudioMode(mode);
-        }}
+        value={captureInput}
+        allowCaptureMusic={captureEnabled}
+        onSelect={selectCaptureInput}
       />
+      {captureEnabled ? <CaptureCompatibilityNote /> : null}
 
       <VisualizerSelector
         value={visualizerId}
@@ -405,10 +515,9 @@ export function DemoExperience({
         <span className="text-xs text-prism-mist/80">Effective: {effectiveQuality}</span>
       </div>
 
-      {audioMode === "live_listen" ? (
-        <p className="text-sm text-prism-mist" data-testid="live-listen-privacy">
-          Microphone audio stays on this device. Only anonymous visualization levels are shared with
-          your paired display.
+      {captureInput === "browser_capture" || captureInput === "microphone" ? (
+        <p className="text-sm text-prism-mist" data-testid="capture-music-privacy">
+          {CAPTURE_PRIVACY}
         </p>
       ) : null}
 
@@ -423,14 +532,16 @@ export function DemoExperience({
             role="status"
           >
             <p className="text-prism-foam">
-              {audioMode === "live_listen"
-                ? "Waiting for microphone permission…"
-                : "Loading Demo Track…"}
+              {captureInput === "browser_capture"
+                ? "Requesting browser permission…"
+                : captureInput === "microphone"
+                  ? "Waiting for microphone permission…"
+                  : "Loading Demo Track…"}
             </p>
           </div>
         ) : null}
 
-        {showUnsupported && audioMode === "demo_track" ? (
+        {showUnsupported && captureInput === "demo_track" ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center p-6" role="alert">
             <p className="max-w-md text-center text-prism-foam">
               This browser does not support the Web Audio API required for Demo Track analysis.
@@ -450,7 +561,7 @@ export function DemoExperience({
               type="button"
               className="prism-btn prism-btn-primary"
               onClick={() => {
-                void engineRef.current?.prepare().then(() => engineRef.current?.play());
+                void demoEngineRef.current?.prepare().then(() => demoEngineRef.current?.play());
               }}
             >
               Retry
@@ -458,18 +569,31 @@ export function DemoExperience({
           </div>
         ) : null}
 
-        {audioMode === "live_listen" ? (
-          <LiveListenStatusPanel
-            status={liveStatus}
+        {captureInput === "browser_capture" || captureInput === "microphone" ? (
+          <CaptureMusicStatusPanel
+            status={captureStatus}
+            source={captureInput === "browser_capture" ? "browser" : "microphone"}
             errorMessage={errorMessage}
-            hasSound={hud.energy >= LIVE_LISTEN_SOUND_THRESHOLD}
+            hasSound={hud.energy >= soundThreshold}
             inputLevel={hud.energy}
             onRetry={() => {
-              void liveEngineRef.current?.start();
+              if (captureInput === "browser_capture") {
+                void browserEngineRef.current?.start();
+                return;
+              }
+              void micEngineRef.current?.start();
             }}
+            onStop={stopCapture}
             onUseDemoTrack={() => {
-              setAudioMode("demo_track");
+              selectCaptureInput("demo_track");
             }}
+            onUseMicrophone={
+              captureInput === "browser_capture"
+                ? () => {
+                    selectCaptureInput("microphone");
+                  }
+                : undefined
+            }
           />
         ) : null}
 
@@ -665,7 +789,9 @@ export function DemoExperience({
       </div>
 
       <div className="space-y-2" aria-live="polite">
-        <p className="text-sm text-prism-mist">{statusLabel(audioMode, status, liveStatus)}</p>
+        <p className="text-sm text-prism-mist">
+          {statusLabel(captureInput, status, captureStatus)}
+        </p>
         {errorMessage && status === "needs_gesture" ? (
           <p className="text-sm text-prism-ember">{errorMessage}</p>
         ) : null}

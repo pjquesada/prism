@@ -15,9 +15,12 @@ import {
   type VisualizerId,
 } from "@prism/contracts";
 import {
+  BROWSER_CAPTURE_SOUND_THRESHOLD,
   DemoTrackEngine,
   LIVE_LISTEN_SOUND_THRESHOLD,
   RemoteFeatureInterpolator,
+  type BrowserCaptureEngine,
+  type BrowserCaptureEngineStatus,
   type LiveListenEngine,
   type LiveListenEngineStatus,
 } from "@prism/audio-engine";
@@ -29,26 +32,36 @@ import {
   type SyncEngineState,
 } from "@prism/sync-engine";
 
-import { LiveListenStatusPanel } from "@/components/live-listen-status";
+import { CaptureMusicStatusPanel } from "@/components/capture-music-status";
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import { PLACEHOLDER_ARTWORK_PATH } from "@/lib/local-artwork";
+import type { CaptureInputOption } from "@/components/audio-mode-selector";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
-const LIVE_LISTEN_PRIVACY =
-  "Microphone audio stays on this device. Only anonymous visualization levels are shared with your paired display.";
+const CAPTURE_PRIVACY =
+  "Audio analysis stays on this device. Prism shares only anonymous visualization levels with your paired display—never your audio or screen.";
+
+export type CaptureEngine = BrowserCaptureEngine | LiveListenEngine;
+export type CaptureEngineStatus = BrowserCaptureEngineStatus | LiveListenEngineStatus;
 
 type SessionVisualizerStageProps = {
   sync: SyncEngineState;
-  /** When true, this device owns Demo Track / Live Listen analysis and audio output. */
+  /**
+   * When true, this device owns Demo Track / Capture Music analysis and (for Demo Track) audio output.
+   * Must stay false for display-only devices and while the local role is unresolved.
+   */
   isAudioAuthority: boolean;
   onPlaybackAnchor?: (playback: PlaybackState) => void;
   className?: string;
   immersive?: boolean;
   /** Controller-owned engine started from a user gesture. Displays must omit this. */
-  liveListenEngine?: LiveListenEngine | null;
+  captureEngine?: CaptureEngine | null;
+  captureSource?: CaptureInputOption;
   subscribeFeatures?: (listener: (envelope: AudioFeatureEnvelope) => void) => () => void;
   publishFeatures?: (envelope: AudioFeatureEnvelope) => void;
-  onStartLiveListen?: () => void;
+  onStartCapture?: () => void;
+  onStopCapture?: () => void;
+  onUseMicrophone?: () => void;
 };
 
 function writeRemoteEnergy(el: HTMLElement | null, energy: number): void {
@@ -65,18 +78,27 @@ function writeMeter(el: HTMLElement | null, energy: number): void {
   if (meter) meter.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
 }
 
+function isCaptureActiveStatus(status: CaptureEngineStatus): boolean {
+  return status === "listening" || status === "waiting" || status === "requesting";
+}
+
 export function SessionVisualizerStage({
   sync,
   isAudioAuthority,
   onPlaybackAnchor,
   className,
   immersive = false,
-  liveListenEngine = null,
+  captureEngine = null,
+  captureSource = "browser_capture",
   subscribeFeatures,
   publishFeatures,
-  onStartLiveListen,
+  onStartCapture,
+  onStopCapture,
+  onUseMicrophone,
 }: SessionVisualizerStageProps) {
   const snapshot = sync.snapshot;
+  const roleResolved = sync.localRole !== null;
+  const canOwnAudio = isAudioAuthority === true && roleResolved && sync.localRole !== "display";
   const engineRef = useRef<DemoTrackEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(createSilentFeatureFrame());
   const interpolatorRef = useRef(new RemoteFeatureInterpolator());
@@ -84,15 +106,15 @@ export function SessionVisualizerStage({
   const lastPublishMsRef = useRef(0);
   const lastAnchorRef = useRef(0);
   const lastDemoStatusRef = useRef<string>("idle");
-  const lastLiveStatusRef = useRef<LiveListenEngineStatus>("idle");
+  const lastCaptureStatusRef = useRef<CaptureEngineStatus>("idle");
   const lastHasSoundRef = useRef(false);
   const remoteEnergyElRef = useRef<HTMLSpanElement | null>(null);
   const meterFillRef = useRef<HTMLDivElement | null>(null);
   const publishFeaturesRef = useRef(publishFeatures);
-  const isAudioAuthorityRef = useRef(isAudioAuthority);
+  const canOwnAudioRef = useRef(canOwnAudio);
   const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
     const publish = publishFeaturesRef.current;
-    if (!isAudioAuthorityRef.current || !publish) return;
+    if (!canOwnAudioRef.current || !publish) return;
     const now = Date.now();
     if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
     lastPublishMsRef.current = now;
@@ -103,25 +125,27 @@ export function SessionVisualizerStage({
   const [engineReady, setEngineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsGesture, setNeedsGesture] = useState(false);
-  const [liveStatus, setLiveStatus] = useState<LiveListenEngineStatus>("idle");
-  const [liveError, setLiveError] = useState<string | undefined>();
+  const [captureStatus, setCaptureStatus] = useState<CaptureEngineStatus>("idle");
+  const [captureError, setCaptureError] = useState<string | undefined>();
   const [hasSound, setHasSound] = useState(false);
 
   useEffect(() => {
     publishFeaturesRef.current = publishFeatures;
-    isAudioAuthorityRef.current = isAudioAuthority;
-  }, [publishFeatures, isAudioAuthority]);
+    canOwnAudioRef.current = canOwnAudio;
+  }, [publishFeatures, canOwnAudio]);
 
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
   const visualizerId: VisualizerId =
     preset?.visualizerId === "dreamscape" ? "spectrum" : (preset?.visualizerId ?? "spectrum");
   const quality: QualityTier = preset?.qualityTier ?? "high";
   const audioMode = snapshot?.playback.audioMode ?? "demo_track";
-  const liveListen = audioMode === "live_listen";
+  const captureMode = audioMode === "live_listen";
   const isPlaying = snapshot?.playback.isPlaying ?? false;
   const sessionId = snapshot?.session.id;
   const ready =
-    !isAudioAuthority || engineReady || liveStatus === "listening" || liveStatus === "requesting";
+    !canOwnAudio ||
+    engineReady ||
+    isCaptureActiveStatus(captureStatus);
   const deviceIndex = snapshot ? displayDeviceIndex(snapshot.devices, sync.localDeviceId ?? "") : 0;
   const params = useMemo(() => {
     const base = parseVisualizerParams(
@@ -132,9 +156,12 @@ export function SessionVisualizerStage({
   }, [visualizerId, preset?.params, snapshot?.session.displayMode, deviceIndex]);
 
   const plugin = useMemo(() => requireVisualizerPlugin(visualizerId), [visualizerId]);
+  const micMode = captureSource === "microphone";
+  const soundThreshold = micMode ? LIVE_LISTEN_SOUND_THRESHOLD : BROWSER_CAPTURE_SOUND_THRESHOLD;
 
   useEffect(() => {
-    if (!sessionId || liveListen || !isAudioAuthority) {
+    // Display-only / unresolved role: never construct Demo Track (no audio output graph).
+    if (!sessionId || captureMode || !canOwnAudio) {
       engineRef.current = null;
       return;
     }
@@ -165,43 +192,44 @@ export function SessionVisualizerStage({
       void engine.dispose();
       engineRef.current = null;
     };
-  }, [liveListen, sessionId, isAudioAuthority]);
+  }, [captureMode, sessionId, canOwnAudio]);
 
   useEffect(() => {
-    if (!sessionId || !liveListen || !isAudioAuthority || !liveListenEngine) return;
-    const engine = liveListenEngine;
-    lastLiveStatusRef.current = "idle";
+    if (!sessionId || !captureMode || !canOwnAudio || !captureEngine) return;
+    const engine = captureEngine;
+    lastCaptureStatusRef.current = "idle";
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
       writeMeter(meterFillRef.current, event.frame.energy);
-      const detected = event.frame.energy >= LIVE_LISTEN_SOUND_THRESHOLD;
+      const detected = event.frame.energy >= soundThreshold;
       if (detected !== lastHasSoundRef.current) {
         lastHasSoundRef.current = detected;
         setHasSound(detected);
       }
-      if (event.status !== lastLiveStatusRef.current) {
-        lastLiveStatusRef.current = event.status;
-        setLiveStatus(event.status);
-        setLiveError(event.errorMessage);
-        setEngineReady(
-          event.status === "listening" ||
-            event.status === "paused" ||
-            event.status === "requesting",
+      if (event.status !== lastCaptureStatusRef.current) {
+        lastCaptureStatusRef.current = event.status;
+        setCaptureStatus(event.status);
+        setCaptureError(event.errorMessage);
+        setEngineReady(isCaptureActiveStatus(event.status) || event.status === "paused");
+        setNeedsGesture(
+          event.status === "idle" ||
+            event.status === "inactive" ||
+            event.status === "ended" ||
+            event.status === "no_audio",
         );
-        setNeedsGesture(event.status === "idle" || event.status === "inactive");
       }
-      if (event.status === "listening") {
+      if (event.status === "listening" || event.status === "waiting") {
         maybePublishRef.current(event.frame);
       }
     });
     return () => {
       unsubscribe();
     };
-  }, [liveListen, isAudioAuthority, sessionId, liveListenEngine]);
+  }, [captureMode, canOwnAudio, sessionId, captureEngine, soundThreshold]);
 
   useEffect(() => {
     const interpolator = interpolatorRef.current;
-    if (isAudioAuthority || !subscribeFeatures) {
+    if (canOwnAudio || !subscribeFeatures) {
       interpolator.reset();
       return;
     }
@@ -218,17 +246,17 @@ export function SessionVisualizerStage({
       unsubscribe();
       interpolator.reset();
     };
-  }, [isAudioAuthority, subscribeFeatures]);
+  }, [canOwnAudio, subscribeFeatures]);
 
   useEffect(() => {
-    if (!isAudioAuthority) return;
+    if (!canOwnAudio) return;
 
-    if (liveListen) {
-      const live = liveListenEngine;
+    if (captureMode) {
+      const live = captureEngine;
       if (!live) return;
       if (isPlaying) {
         if (live.getStatus() === "paused") void live.start();
-      } else if (live.getStatus() === "listening") {
+      } else if (live.getStatus() === "listening" || live.getStatus() === "waiting") {
         void live.pause();
       }
       return;
@@ -238,21 +266,23 @@ export function SessionVisualizerStage({
     if (!engine) return;
     if (isPlaying) void engine.play();
     else void engine.pause();
-  }, [isAudioAuthority, isPlaying, liveListen, liveListenEngine]);
+  }, [canOwnAudio, isPlaying, captureMode, captureEngine]);
 
   useEffect(() => {
-    if (!isAudioAuthority || !onPlaybackAnchor || !snapshot) return;
+    if (!canOwnAudio || !onPlaybackAnchor || !snapshot) return;
     const id = window.setInterval(() => {
       const playback = snapshot.playback;
       const now = Date.now();
       if (playback.audioMode === "live_listen") {
-        const live = liveListenEngine;
+        const live = captureEngine;
         if (!live) return;
-        if (now - lastAnchorRef.current < 1800 && live.getStatus() === "listening") return;
+        const status = live.getStatus();
+        const active = status === "listening" || status === "waiting";
+        if (now - lastAnchorRef.current < 1800 && active) return;
         lastAnchorRef.current = now;
         onPlaybackAnchor({
           audioMode: "live_listen",
-          isPlaying: live.getStatus() === "listening",
+          isPlaying: active,
           positionMs: 0,
           rate: 1,
           trackId: "live-listen",
@@ -277,7 +307,7 @@ export function SessionVisualizerStage({
       });
     }, 2000);
     return () => window.clearInterval(id);
-  }, [isAudioAuthority, onPlaybackAnchor, snapshot, liveListen, liveListenEngine]);
+  }, [canOwnAudio, onPlaybackAnchor, snapshot, captureMode, captureEngine]);
 
   if (!snapshot) {
     return (
@@ -287,13 +317,16 @@ export function SessionVisualizerStage({
     );
   }
 
-  const showEnableMic =
-    liveListen &&
-    isAudioAuthority &&
-    !liveListenEngine &&
-    (liveStatus === "idle" || liveStatus === "inactive" || liveStatus === "paused");
+  const showEnableCapture =
+    captureMode &&
+    canOwnAudio &&
+    !captureEngine &&
+    (captureStatus === "idle" ||
+      captureStatus === "inactive" ||
+      captureStatus === "paused" ||
+      captureStatus === "ended");
 
-  const resolveFeatures = !isAudioAuthority
+  const resolveFeatures = !canOwnAudio
     ? (nowMs: number) => {
         const frame = interpolatorRef.current.sample(nowMs);
         featuresRef.current = frame;
@@ -306,10 +339,11 @@ export function SessionVisualizerStage({
     <div
       className={["flex min-h-0 flex-1 flex-col", className].filter(Boolean).join(" ")}
       data-testid="session-visualizer-stage"
-      data-audio-authority={isAudioAuthority ? "true" : "false"}
-      data-audio-output={isAudioAuthority ? "local" : "silent"}
+      data-audio-authority={canOwnAudio ? "true" : "false"}
+      data-audio-output={canOwnAudio && !captureMode ? "local" : "silent"}
+      data-role-resolved={roleResolved ? "true" : "false"}
     >
-      {!ready && !error && !liveListen ? (
+      {!ready && !error && !captureMode ? (
         <p className="mb-3 text-sm text-prism-mist" role="status">
           Loading visualizer…
         </p>
@@ -319,7 +353,7 @@ export function SessionVisualizerStage({
           {error}
         </p>
       ) : null}
-      {needsGesture && isAudioAuthority && !liveListen ? (
+      {needsGesture && canOwnAudio && !captureMode ? (
         <button
           type="button"
           className="prism-btn prism-btn-primary mb-3"
@@ -328,29 +362,29 @@ export function SessionVisualizerStage({
           Start Demo Track
         </button>
       ) : null}
-      {showEnableMic ? (
+      {showEnableCapture ? (
         <button
           type="button"
           className="prism-btn prism-btn-primary mb-3"
-          data-testid="enable-live-listen"
-          onClick={() => onStartLiveListen?.()}
+          data-testid="enable-capture-music"
+          onClick={() => onStartCapture?.()}
         >
-          Enable Live Listen
+          {micMode ? "Enable Microphone" : "Start Capture Music"}
         </button>
       ) : null}
-      {liveListen && isAudioAuthority ? (
-        <p className="mb-3 text-sm text-prism-mist" data-testid="live-listen-privacy">
-          {LIVE_LISTEN_PRIVACY}
+      {captureMode && canOwnAudio ? (
+        <p className="mb-3 text-sm text-prism-mist" data-testid="capture-music-privacy">
+          {CAPTURE_PRIVACY}
         </p>
       ) : null}
-      {!isAudioAuthority ? (
+      {!canOwnAudio ? (
         <p
           className="mb-3 text-sm text-prism-mist"
           role="status"
-          data-testid={liveListen ? "live-listen-follower" : "display-silent"}
+          data-testid={captureMode ? "capture-music-follower" : "display-silent"}
         >
-          {liveListen
-            ? "Controller is using Live Listen. This display never asks for a microphone — it follows anonymous visualization levels only."
+          {captureMode
+            ? "Controller is using Capture Music. This display never asks for microphone or screen capture — it follows anonymous visualization levels only."
             : "This display is silent. Visualization follows the controller; Demo Track audio plays only there."}
         </p>
       ) : null}
@@ -359,19 +393,30 @@ export function SessionVisualizerStage({
         immersive={immersive}
         showFullscreen={immersive}
       >
-        {liveListen && isAudioAuthority ? (
-          <LiveListenStatusPanel
-            status={liveStatus}
-            errorMessage={liveError}
+        {captureMode && canOwnAudio ? (
+          <CaptureMusicStatusPanel
+            status={captureStatus}
+            source={micMode ? "microphone" : "browser"}
+            errorMessage={captureError}
             hasSound={hasSound}
             meterFillRef={meterFillRef}
             onRetry={() => {
-              if (liveListenEngine) {
-                void liveListenEngine.start();
+              if (captureEngine) {
+                void captureEngine.start();
                 return;
               }
-              onStartLiveListen?.();
+              onStartCapture?.();
             }}
+            onStop={() => {
+              onStopCapture?.();
+            }}
+            onUseMicrophone={
+              !micMode
+                ? () => {
+                    onUseMicrophone?.();
+                  }
+                : undefined
+            }
             onUseDemoTrack={() => {
               onPlaybackAnchor?.({
                 ...snapshot.playback,
@@ -390,7 +435,7 @@ export function SessionVisualizerStage({
           params={params}
           albumArtUrl={visualizerId === "album_world" ? PLACEHOLDER_ARTWORK_PATH : null}
         />
-        {!isAudioAuthority ? (
+        {!canOwnAudio ? (
           <span
             ref={remoteEnergyElRef}
             className="sr-only"

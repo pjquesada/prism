@@ -18,6 +18,13 @@ export {
   type DemoTrackEngineStatus,
 } from "./demo-track-engine.js";
 export {
+  BrowserCaptureEngine,
+  BROWSER_CAPTURE_SOUND_THRESHOLD,
+  type BrowserCaptureEngineListener,
+  type BrowserCaptureEngineOptions,
+  type BrowserCaptureEngineStatus,
+} from "./browser-capture-engine.js";
+export {
   LiveListenEngine,
   LIVE_LISTEN_SOUND_THRESHOLD,
   type LiveListenEngineListener,
@@ -44,6 +51,21 @@ export {
   type LiveListenFailure,
   type LiveListenFailureStatus,
 } from "./media-permission.js";
+export {
+  BROWSER_CAPTURE_CONSTRAINTS,
+  BROWSER_CAPTURE_CHROMIUM_HINTS,
+  NO_AUDIO_SHARED_MESSAGE,
+  buildBrowserCaptureConstraints,
+  canRequestBrowserCapture,
+  classifyGetDisplayMediaError,
+  detectDisplayMediaSupport,
+  discardCapturedVideoTracks,
+  stopDisplayMediaStream,
+  streamHasAudioTrack,
+  type BrowserCaptureFailure,
+  type BrowserCaptureFailureStatus,
+  type DisplayMediaSupport,
+} from "./display-media.js";
 export {
   applyEnvelope,
   buildFeatureFrame,

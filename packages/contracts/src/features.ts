@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { createSilentFeatureFrame, type AudioFeatureFrame } from "./domain.js";
 
-/** Compact Live Listen envelope — never includes FFT bins, PCM, or MediaStream data. */
+/** Compact Capture Music / Demo Track envelope — never includes FFT bins, PCM, or MediaStream data. */
 export const AUDIO_FEATURE_ENVELOPE_LEVEL_COUNT = 8;
 /** Target publish rate for controller → display envelopes (15–30 Hz). */
 export const AUDIO_FEATURE_ENVELOPE_MAX_HZ = 20;

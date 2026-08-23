@@ -36,6 +36,27 @@ const engineMock = {
   }),
 };
 
+const browserEngineMock = {
+  start: vi.fn(async () => {
+    for (const listener of listeners) {
+      listener({
+        status: "waiting",
+        frame: createSilentFeatureFrame(),
+        errorMessage: undefined,
+      });
+    }
+  }),
+  pause: vi.fn(async () => undefined),
+  stop: vi.fn(async () => undefined),
+  dispose: vi.fn(async () => undefined),
+  getStatus: vi.fn(() => "idle"),
+  subscribe: vi.fn((listener: (event: unknown) => void) => {
+    listeners.add(listener);
+    listener({ status: "idle", frame: createSilentFeatureFrame() });
+    return () => listeners.delete(listener);
+  }),
+};
+
 const liveEngineMock = {
   start: vi.fn(async () => {
     for (const listener of listeners) {
@@ -60,12 +81,21 @@ vi.mock("@prism/audio-engine", () => ({
   DemoTrackEngine: vi.fn(function DemoTrackEngine() {
     return engineMock;
   }),
+  BrowserCaptureEngine: vi.fn(function BrowserCaptureEngine() {
+    return browserEngineMock;
+  }),
   LiveListenEngine: vi.fn(function LiveListenEngine() {
     return liveEngineMock;
   }),
   silentFrame: (timestampMs = 0, bandCount = 32) =>
     createSilentFeatureFrame(timestampMs, bandCount),
   LIVE_LISTEN_SOUND_THRESHOLD: 0.035,
+  BROWSER_CAPTURE_SOUND_THRESHOLD: 0.035,
+  detectDisplayMediaSupport: () => ({
+    secureContext: true,
+    getDisplayMedia: true,
+    canAttemptAudioCapture: true,
+  }),
   getResourceCounts: () => ({
     audioContexts: 0,
     mediaSources: 0,
@@ -105,6 +135,7 @@ describe("DemoExperience", () => {
     listeners.clear();
     vi.clearAllMocks();
     window.localStorage.clear();
+    window.sessionStorage.clear();
   });
 
   it("shows play control and starts playback on click", async () => {
@@ -126,15 +157,24 @@ describe("DemoExperience", () => {
     expect(engineMock.prepare).toHaveBeenCalledTimes(1);
   });
 
-  it("starts Live Listen locally and does not keep the Demo Track engine", async () => {
+  it("starts Capture Music via browser capture and disposes Demo Track", async () => {
     render(<DemoExperience variant="demo" />);
-    expect(liveEngineMock.start).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId("audio-mode-live_listen"));
+    expect(browserEngineMock.start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("audio-mode-browser_capture"));
     expect(engineMock.dispose).toHaveBeenCalled();
-    expect(liveEngineMock.start).toHaveBeenCalled();
-    expect(screen.getByTestId("audio-mode-live_listen").getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByTestId("live-listen-privacy").textContent).toMatch(
-      /Microphone audio stays on this device/i,
+    expect(browserEngineMock.start).toHaveBeenCalled();
+    expect(screen.getByTestId("audio-mode-browser_capture").getAttribute("aria-pressed")).toBe(
+      "true",
     );
+    expect(screen.getByTestId("capture-music-privacy").textContent).toMatch(
+      /Audio analysis stays on this device/i,
+    );
+  });
+
+  it("keeps microphone fallback working", async () => {
+    render(<DemoExperience variant="demo" />);
+    fireEvent.click(screen.getByTestId("audio-mode-microphone"));
+    expect(liveEngineMock.start).toHaveBeenCalled();
+    expect(screen.getByTestId("audio-mode-microphone").getAttribute("aria-pressed")).toBe("true");
   });
 });

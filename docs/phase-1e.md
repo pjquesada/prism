@@ -1,54 +1,70 @@
-# Phase 1E — Live Listen
+# Phase 1E — Capture Music (input-capture stabilization)
 
 ## Goals delivered
 
-- `LiveListenEngine` in `packages/audio-engine`: `getUserMedia` → `AnalyserNode` feature extraction only
-- Microphone is never connected to speakers (no monitor/feedback path)
-- Tracks, analyser, and AudioContext are stopped/closed on pause-dispose and unmount
-- Combined `/app` and `/demo` can switch Demo Track ↔ Live Listen
-- Session controllers can set `playback.audioMode` to `live_listen`
-- Compact `audio.features` envelopes (20 Hz max) sync visualization levels to paired displays for **both** Demo Track and Live Listen
-- Displays interpolate envelopes at `requestAnimationFrame` and decay to silence; they never request a microphone or play session audio
-- Permission denied / unavailable / unsupported / inactive / error states with Try again and Use Demo Track
-- Controller input-level meter plus Listening — sound detected / waiting for sound
-- Display visualizers fill the available stage (`100dvh`, safe-area insets, DPR-backed canvas resize)
-- Feature flag: `NEXT_PUBLIC_ENABLE_LIVE_LISTEN` (disabled only when set to `false`)
-- ADR: analysis stays on the controller; only anonymous numeric levels are shared
+- **Capture Music** primary mode using controller-only `getDisplayMedia()` tab/system audio analysis
+- Microphone kept as an optional fallback (`LiveListenEngine` / `getUserMedia`)
+- Demo Track unchanged for local royalty-free playback
+- Captured audio is never connected to speakers (no echo / second playback path)
+- Captured video tracks are discarded immediately and never rendered, encoded, transmitted, or persisted
+- `MediaRecorder` is never used
+- Compact `audio.features` envelopes (≤ 20 Hz) sync visualization levels to paired displays
+- Displays stay silent and never call `getDisplayMedia` / `getUserMedia`
+- Accurate Capture Music states (choose source, requesting permission, connected waiting/detected, no audio, sharing stopped, unsupported, denied, AudioContext suspended, runtime failure)
+- Controller input-level meter
+- Privacy copy: analysis stays on-device; only anonymous visualization levels are shared
+- PWA cache bumped (`v2-capture-music`); waiting service worker shows **Update available — Reload** instead of silent `skipWaiting`
+- Capture stops when controller credentials become invalid
+- ADR updated; provider OAuth explicitly out of scope
+
+## Why microphone-first failed for the real product loop
+
+Room mics pick up speakers poorly (noise, echo cancellation artifacts, low SNR), require a permission users associate with calls, and do not match the intended workflow: music already playing in YouTube / Spotify Web / Apple Music Web / SoundCloud / Pandora on the controller PC.
+
+## Why phones could still produce audio after the silence fix
+
+Likely causes addressed here:
+
+1. **Stale service-worker / PWA caches** serving older display bundles that still constructed `DemoTrackEngine`
+2. Automatic `skipWaiting` + `clientsClaim` swapping bundles mid-session without a clear reload
+3. Role-unresolved hydration windows needing a hard default of **no capture / no audio output**
+4. Display routes must never own Demo Track or capture engines even if cookies are confusing
+
+This stabilization bumps runtime cache names, disables silent SW takeover, and gates audio authority on an explicit resolved non-display role.
 
 ## Audio ownership
 
-| Mode            | Audio output    | Microphone access               | Feature producer                    |
-| --------------- | --------------- | ------------------------------- | ----------------------------------- |
-| Controller only | Controller only | Controller only for Live Listen | Controller                          |
-| Display only    | Silent          | Never                           | Never; consumes controller features |
-| Combined        | Local device    | Local device for Live Listen    | Local device                        |
-| Demo standalone | Local device    | Only when Live Listen selected  | Local device                        |
+| Role            | Actual audio output         | Capture permission | Feature behavior     |
+| --------------- | --------------------------- | ------------------ | -------------------- |
+| Controller      | Original music source only  | Controller only    | Produces features    |
+| Display         | Silent                      | Never              | Consumes features    |
+| Combined        | Original local music source | Local device       | Produces and renders |
+| Demo standalone | Demo Track locally          | Local device       | Produces and renders |
 
-Display-only devices must not construct `DemoTrackEngine` or `LiveListenEngine`, must not call `getUserMedia`, and must not connect an analyser to `AudioContext.destination`.
+## Browser / OS compatibility (feature-detected)
 
-## Render path
+| Environment              | Expectation                                                                 |
+| ------------------------ | --------------------------------------------------------------------------- |
+| Chrome / Edge desktop    | Preferred — tab audio and often system audio                                |
+| Tab audio                | Share the playing tab and enable Share tab audio                            |
+| System audio             | Only when the browser/OS dialog offers it                                   |
+| Firefox / Safari / mobile| Limited or unavailable audio capture — offer Microphone / Demo Track        |
+| DRM / protected media    | May not expose capturable audio even when playback works                    |
 
-- Network envelopes stay at ≤ 20 Hz.
-- Visualizers render on one `requestAnimationFrame` loop (R3F `useFrame`) with timestamp-aware interpolation (fast attack, slower release).
-- Feature frames are stored in refs / the interpolator, not React state.
-- Snapshot HTTP polling backs off while SSE/Supabase realtime is healthy.
-- Hidden tabs pause the canvas (`frameloop="never"`).
-- Particle count / post / resolution change only through adaptive quality caps.
-
-## Development performance snapshot
-
-When `NODE_ENV !== "production"` (or `NEXT_PUBLIC_PRISM_PERF=1`), `window.__PRISM_PERF__` reports approximate FPS, feature Hz, dropped/stale frames, animation loops, AudioContext/source counts, and realtime subscriptions. It never includes samples, FFT arrays, pairing codes, or secrets.
+Prism never claims guaranteed support for every streaming provider.
 
 ## Out of scope (confirmed)
 
-- Manual Sync, Ambient generative profiles, Dreamscape / AI, provider OAuth, Android TV, Phase 1F
+- Provider OAuth (Spotify / Apple Music / SoundCloud / Pandora / YouTube)
+- Manual Sync, Ambient, Dreamscape / AI, Android TV, Phase 1F
+- Native desktop system-audio APIs beyond browser `getDisplayMedia`
 
 ## Manual checks
 
-1. `pnpm install && pnpm build`
-2. Open `/demo` or `/app`, select **Live Listen**, allow the microphone, confirm the visualizer reacts and the input meter moves
-3. Deny permission → recovery copy, **Try again**, **Use Demo Track**
-4. Leave the page — microphone indicator turns off
-5. Pair a PC controller with a phone display: Demo Track audio on the PC only; phone is silent and interpolates envelopes
-6. Controller Live Listen; display reacts without a mic prompt
-7. Confirm the display canvas fills the bordered stage (no shallow strip)
+1. Chrome/Edge: play YouTube in another tab → Capture Music → share that tab with **Share tab audio** → display phone reacts silently
+2. Spotify Web Player / Apple Music Web / SoundCloud / Pandora — same tab-audio flow (where the browser exposes audio)
+3. Windows system audio where the dialog offers it
+4. Deny / no-audio share → recovery copy; fallback to Microphone or Demo Track
+5. Stop capture / leave page / end share → tracks stop; no auto-restart
+6. Paired display never prompts for mic or screen share and never plays Demo Track
+7. After deploy, old clients see **Update available — Reload** before the new SW takes over

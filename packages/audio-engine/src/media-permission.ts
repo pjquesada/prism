@@ -34,7 +34,7 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Map getUserMedia failures to recoverable Live Listen UI states.
+ * Map getUserMedia failures to recoverable Microphone fallback UI states.
  * Never include raw media error objects in UI copy.
  */
 export function classifyGetUserMediaError(error: unknown): LiveListenFailure {
@@ -50,7 +50,7 @@ export function classifyGetUserMediaError(error: unknown): LiveListenFailure {
     return {
       status: "denied",
       message:
-        "Microphone permission was denied. Allow the microphone for this site in your browser settings, then try again.",
+        "Microphone permission was denied. Allow the microphone for this site in your browser settings, then try again — or use Capture Music / Demo Track.",
     };
   }
 
@@ -61,7 +61,7 @@ export function classifyGetUserMediaError(error: unknown): LiveListenFailure {
   ) {
     return {
       status: "unavailable",
-      message: "No microphone was found. Connect a mic or switch back to Demo Track.",
+      message: "No microphone was found. Connect a mic or switch to Capture Music / Demo Track.",
     };
   }
 
@@ -75,13 +75,13 @@ export function classifyGetUserMediaError(error: unknown): LiveListenFailure {
     return {
       status: "unsupported",
       message:
-        "This browser cannot access the microphone. Use HTTPS or localhost, or switch to Demo Track.",
+        "This browser cannot access the microphone. Use HTTPS or localhost, or switch to Capture Music / Demo Track.",
     };
   }
 
   return {
     status: "error",
-    message: "Could not start Live Listen. Try again or use Demo Track.",
+    message: "Could not start microphone capture. Try again or use Capture Music / Demo Track.",
   };
 }
 
