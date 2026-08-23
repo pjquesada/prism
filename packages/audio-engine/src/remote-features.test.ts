@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createSilentFeatureEnvelope } from "@prism/contracts";
+import { AUDIO_FEATURE_ENVELOPE_MAX_HZ, createSilentFeatureEnvelope } from "@prism/contracts";
 
 import { RemoteFeatureInterpolator } from "./remote-features.js";
 
@@ -29,17 +29,31 @@ describe("RemoteFeatureInterpolator", () => {
     expect(sampled.energy).toBeGreaterThan(0.2);
   });
 
+  it("produces smooth intermediate frames between envelopes", () => {
+    const interp = new RemoteFeatureInterpolator();
+    const now = 3_000_000;
+    interp.ingest({ ...createSilentFeatureEnvelope(1, now), energy: 1, rms: 1, bass: 1 }, now);
+    const a = interp.sample(now + 8).energy;
+    const b = interp.sample(now + 24).energy;
+    const c = interp.sample(now + 48).energy;
+    expect(a).toBeGreaterThan(0);
+    expect(a).toBeLessThan(1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+    expect(c).toBeLessThanOrEqual(1);
+  });
+
   it("decays toward silence when frames stop", () => {
     const interp = new RemoteFeatureInterpolator();
     const now = 2_000_000;
     interp.ingest({ ...createSilentFeatureEnvelope(1, now), energy: 1, rms: 1, bass: 1 }, now);
     interp.sample(now + 16);
     interp.sample(now + 32);
-    const live = interp.sample(now + 48);
-    expect(live.energy).toBeGreaterThan(0.4);
-    const decayed = interp.sample(now + 900);
-    expect(decayed.energy).toBeLessThan(0.05);
-    expect(decayed.energy).toBeLessThan(live.energy);
+    const liveEnergy = interp.sample(now + 48).energy;
+    expect(liveEnergy).toBeGreaterThan(0.4);
+    const decayedEnergy = interp.sample(now + 900).energy;
+    expect(decayedEnergy).toBeLessThan(0.05);
+    expect(decayedEnergy).toBeLessThan(liveEnergy);
   });
 
   it("rejects oversized payloads", () => {
@@ -47,5 +61,25 @@ describe("RemoteFeatureInterpolator", () => {
     const result = interp.ingest(createSilentFeatureEnvelope(1, Date.now()), Date.now(), 8_000);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("oversized");
+  });
+
+  it("samples faster than the 20 Hz network cap", () => {
+    const interp = new RemoteFeatureInterpolator();
+    const now = 4_000_000;
+    let ingested = 0;
+    for (let t = 0; t <= 1000; t += 50) {
+      interp.ingest(
+        { ...createSilentFeatureEnvelope(ingested + 1, now + t), energy: 0.7, rms: 0.6 },
+        now + t,
+      );
+      ingested += 1;
+    }
+    let samples = 0;
+    for (let t = 0; t <= 1000; t += 16) {
+      interp.sample(now + t);
+      samples += 1;
+    }
+    expect(ingested).toBeLessThanOrEqual(AUDIO_FEATURE_ENVELOPE_MAX_HZ + 1);
+    expect(samples).toBeGreaterThan(AUDIO_FEATURE_ENVELOPE_MAX_HZ);
   });
 });

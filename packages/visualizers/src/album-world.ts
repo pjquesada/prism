@@ -25,6 +25,7 @@ import {
 } from "three";
 
 import { extractPaletteFromImageData, type Rgb } from "./palette.js";
+import { createIdentityParamCache } from "./param-cache.js";
 
 const PLACEHOLDER_DATA_URL =
   "data:image/svg+xml;charset=utf-8," +
@@ -75,6 +76,7 @@ class AlbumWorldInstance implements VisualizerInstance {
   private avg = new Color("#0a1c28");
   private beatPulse = 0;
   private lastFlashMs = -Infinity;
+  private readonly paramsOf = createIdentityParamCache(parseParams);
 
   constructor(ctx: VisualizerMountContext) {
     this.scene = ctx.scene;
@@ -91,7 +93,7 @@ class AlbumWorldInstance implements VisualizerInstance {
 
   update(props: VisualizerProps): void {
     if (this.disposed) return;
-    const params = parseParams(props.preset.params);
+    const params = this.paramsOf(props.preset.params);
     const desired = layerCountForQuality(this.quality, params.depthLayers);
     if (desired !== this.layers.length) {
       this.rebuildLayers(desired);

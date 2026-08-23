@@ -13,6 +13,8 @@ import type {
 } from "@prism/visual-engine";
 import { BufferAttribute, BufferGeometry, Color, Points, PointsMaterial, type Scene } from "three";
 
+import { createIdentityParamCache } from "./param-cache.js";
+
 const MAX_POOL = 4096;
 /** Minimum ms between full-screen-ish burst flashes (photosensitivity). */
 const MIN_BURST_INTERVAL_MS = 180;
@@ -63,6 +65,7 @@ class ParticlesInstance implements VisualizerInstance {
   private burstPulse = 0;
   private time = 0;
   private cursor = 0;
+  private readonly paramsOf = createIdentityParamCache(parseParams);
 
   constructor(ctx: VisualizerMountContext) {
     this.scene = ctx.scene;
@@ -93,7 +96,7 @@ class ParticlesInstance implements VisualizerInstance {
 
   update(props: VisualizerProps): void {
     if (this.disposed) return;
-    const params = parseParams(props.preset.params);
+    const params = this.paramsOf(props.preset.params);
     this.capacity = particleCap(this.quality, params.particleCount);
 
     const motion = props.reducedMotion ? 0.28 : 1;

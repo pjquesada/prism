@@ -58,6 +58,12 @@ describe("stopMediaStream", () => {
 describe("LIVE_LISTEN_AUDIO_CONSTRAINTS", () => {
   it("requests audio only", () => {
     expect(LIVE_LISTEN_AUDIO_CONSTRAINTS.video).toBe(false);
-    expect(LIVE_LISTEN_AUDIO_CONSTRAINTS.audio).toBeTruthy();
+    expect(LIVE_LISTEN_AUDIO_CONSTRAINTS.audio).toEqual(
+      expect.objectContaining({
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+      }),
+    );
   });
 });
