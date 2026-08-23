@@ -310,7 +310,9 @@ describe("SessionVisualizerStage audio ownership", () => {
     const envelope = publishFeatures.mock.calls[0]?.[0] as AudioFeatureEnvelope;
     expect(envelope.levels).toHaveLength(8);
     expect(envelope).not.toHaveProperty("bands");
-    expect(JSON.stringify(envelope)).not.toMatch(/pcm|fft|microphone|MediaStream|frequencyData|video/);
+    expect(JSON.stringify(envelope)).not.toMatch(
+      /pcm|fft|microphone|MediaStream|frequencyData|video/,
+    );
   });
 
   it("applies remote Demo Track envelopes without rerendering at 20 Hz", () => {

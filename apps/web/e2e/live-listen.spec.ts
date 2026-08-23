@@ -51,9 +51,7 @@ test.describe("Phase 1E Capture Music", () => {
       osc.frequency.value = 220;
       osc.connect(dest);
       osc.start();
-      const videoTrack = dest.stream.getAudioTracks()[0]
-        ? dest.stream.getAudioTracks()[0]
-        : null;
+      const videoTrack = dest.stream.getAudioTracks()[0] ? dest.stream.getAudioTracks()[0] : null;
       Object.defineProperty(navigator, "mediaDevices", {
         configurable: true,
         value: {

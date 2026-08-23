@@ -114,7 +114,11 @@ export function DisplaySessionPanel() {
   }
 
   return (
-    <main className="prism-display-root" data-testid="display-root" data-role={sync.localRole ?? "unresolved"}>
+    <main
+      className="prism-display-root"
+      data-testid="display-root"
+      data-role={sync.localRole ?? "unresolved"}
+    >
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <p className="font-display text-xl font-bold tracking-tight">Prism</p>
         <p className="text-sm text-prism-mist" data-testid="display-visualizer">

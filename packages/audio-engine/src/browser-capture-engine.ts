@@ -64,7 +64,9 @@ export class BrowserCaptureEngine {
   private readonly fftSize: number;
   private readonly bandCount: number;
   private readonly validateFrames: boolean;
-  private readonly getDisplayMedia: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
+  private readonly getDisplayMedia: (
+    constraints: DisplayMediaStreamOptions,
+  ) => Promise<MediaStream>;
   private readonly createContext: () => AudioContext | null;
   private readonly isSecure: () => boolean;
   private readonly raf: (callback: FrameRequestCallback) => number;
@@ -143,11 +145,7 @@ export class BrowserCaptureEngine {
 
   async start(): Promise<void> {
     if (this.disposed) return;
-    if (
-      this.status === "requesting" ||
-      this.status === "waiting" ||
-      this.status === "listening"
-    ) {
+    if (this.status === "requesting" || this.status === "waiting" || this.status === "listening") {
       return;
     }
 
@@ -165,13 +163,20 @@ export class BrowserCaptureEngine {
         this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
         return;
       }
-      this.setStatus(this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting");
+      this.setStatus(
+        this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting",
+      );
       this.startLoop();
       return;
     }
 
     const devices = typeof navigator !== "undefined" ? (navigator.mediaDevices ?? null) : null;
-    if (!canRequestBrowserCapture(devices ?? { getDisplayMedia: this.getDisplayMedia }, this.isSecure())) {
+    if (
+      !canRequestBrowserCapture(
+        devices ?? { getDisplayMedia: this.getDisplayMedia },
+        this.isSecure(),
+      )
+    ) {
       this.setFailure(
         "unsupported",
         "Browser/system audio capture is unavailable here. Prefer Chrome or Edge on desktop, or use Microphone / Demo Track.",
@@ -258,7 +263,10 @@ export class BrowserCaptureEngine {
       this.bindTrackEnded(this.stream);
     } catch {
       await this.tearDownGraph({ keepStatus: true });
-      this.setFailure("error", "Could not start Capture Music. Try again or use Microphone / Demo Track.");
+      this.setFailure(
+        "error",
+        "Could not start Capture Music. Try again or use Microphone / Demo Track.",
+      );
       return;
     }
 
@@ -338,7 +346,10 @@ export class BrowserCaptureEngine {
       if (alive) return;
       void this.tearDownGraph({ keepStatus: true }).then(() => {
         if (this.disposed) return;
-        this.setFailure("ended", "Sharing stopped. Click Capture Music to choose a music source again.");
+        this.setFailure(
+          "ended",
+          "Sharing stopped. Click Capture Music to choose a music source again.",
+        );
       });
     };
     this.trackEndedHandler = handler;
@@ -409,8 +420,7 @@ export class BrowserCaptureEngine {
       this.frame = this.validateFrames ? audioFeatureFrameSchema.parse(result.frame) : result.frame;
 
       if (this.status === "waiting" || this.status === "listening") {
-        const next =
-          this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting";
+        const next = this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting";
         if (next !== this.status) {
           this.status = next;
           this.errorMessage = undefined;

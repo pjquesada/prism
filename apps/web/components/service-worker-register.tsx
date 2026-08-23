@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Registers the production service worker without auto-activating a waiting
@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 export function ServiceWorkerRegister() {
   const [updateReady, setUpdateReady] = useState(false);
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
+  const reloadAfterClaimRef = useRef(false);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
@@ -55,8 +56,11 @@ export function ServiceWorkerRegister() {
       });
 
     const onControllerChange = () => {
-      // After SKIP_WAITING + claim, reload once to pick up the new bundle.
-      window.location.reload();
+      // Only reload after an explicit user "Reload" — never on the first SW claim,
+      // which would wipe in-memory session UI mid-pairing.
+      if (reloadAfterClaimRef.current) {
+        window.location.reload();
+      }
     };
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
@@ -84,11 +88,14 @@ export function ServiceWorkerRegister() {
           className="prism-btn prism-btn-primary"
           data-testid="sw-update-reload"
           onClick={() => {
+            reloadAfterClaimRef.current = true;
             waitingWorker?.postMessage({ type: "PRISM_SKIP_WAITING" });
-            // If there is no waiting worker message path, force reload anyway.
+            // Fallback if the waiting worker never claims (already controlling).
             window.setTimeout(() => {
-              window.location.reload();
-            }, 400);
+              if (reloadAfterClaimRef.current) {
+                window.location.reload();
+              }
+            }, 800);
           }}
         >
           Reload

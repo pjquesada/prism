@@ -28,6 +28,7 @@ describe("ServiceWorkerRegister", () => {
     };
     const addEventListener = vi.fn();
     const removeEventListener = vi.fn();
+    const reload = vi.fn();
     vi.stubGlobal("navigator", {
       ...navigator,
       serviceWorker: {
@@ -36,6 +37,10 @@ describe("ServiceWorkerRegister", () => {
         addEventListener,
         removeEventListener,
       },
+    });
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, reload },
     });
 
     render(<ServiceWorkerRegister />);

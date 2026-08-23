@@ -85,14 +85,11 @@ describe("display-media helpers", () => {
 
   it("feature-detects getDisplayMedia support", () => {
     expect(
-      canRequestBrowserCapture(
-        { getDisplayMedia: async () => createFakeStream().stream },
-        true,
-      ),
+      canRequestBrowserCapture({ getDisplayMedia: async () => createFakeStream().stream }, true),
     ).toBe(true);
-    expect(canRequestBrowserCapture({ getDisplayMedia: async () => createFakeStream().stream }, false)).toBe(
-      false,
-    );
+    expect(
+      canRequestBrowserCapture({ getDisplayMedia: async () => createFakeStream().stream }, false),
+    ).toBe(false);
     expect(canRequestBrowserCapture(null, true)).toBe(false);
   });
 
@@ -199,8 +196,7 @@ describe("BrowserCaptureEngine", () => {
     await engine.start();
     const audio = tracks.find((t) => t.kind === "audio")!;
     const ended = audio.addEventListener.mock.calls.find((call) => call[0] === "ended")?.[1] as
-      | (() => void)
-      | undefined;
+      (() => void) | undefined;
     expect(ended).toBeTypeOf("function");
     audio.readyState = "ended";
     ended?.();

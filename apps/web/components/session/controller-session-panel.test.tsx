@@ -46,10 +46,8 @@ vi.mock("@/components/session/session-visualizer-stage", () => ({
   SessionVisualizerStage: () => <div data-testid="controller-stage">stage</div>,
 }));
 
-vi.mock("@prism/audio-engine", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@prism/audio-engine")>();
+vi.mock("@prism/audio-engine", () => {
   return {
-    ...actual,
     BrowserCaptureEngine: vi.fn(function BrowserCaptureEngine() {
       return {
         start: vi.fn(async () => undefined),

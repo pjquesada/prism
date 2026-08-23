@@ -142,10 +142,7 @@ export function SessionVisualizerStage({
   const captureMode = audioMode === "live_listen";
   const isPlaying = snapshot?.playback.isPlaying ?? false;
   const sessionId = snapshot?.session.id;
-  const ready =
-    !canOwnAudio ||
-    engineReady ||
-    isCaptureActiveStatus(captureStatus);
+  const ready = !canOwnAudio || engineReady || isCaptureActiveStatus(captureStatus);
   const deviceIndex = snapshot ? displayDeviceIndex(snapshot.devices, sync.localDeviceId ?? "") : 0;
   const params = useMemo(() => {
     const base = parseVisualizerParams(

@@ -43,13 +43,13 @@ This stabilization bumps runtime cache names, disables silent SW takeover, and g
 
 ## Browser / OS compatibility (feature-detected)
 
-| Environment              | Expectation                                                                 |
-| ------------------------ | --------------------------------------------------------------------------- |
-| Chrome / Edge desktop    | Preferred — tab audio and often system audio                                |
-| Tab audio                | Share the playing tab and enable Share tab audio                            |
-| System audio             | Only when the browser/OS dialog offers it                                   |
-| Firefox / Safari / mobile| Limited or unavailable audio capture — offer Microphone / Demo Track        |
-| DRM / protected media    | May not expose capturable audio even when playback works                    |
+| Environment               | Expectation                                                          |
+| ------------------------- | -------------------------------------------------------------------- |
+| Chrome / Edge desktop     | Preferred — tab audio and often system audio                         |
+| Tab audio                 | Share the playing tab and enable Share tab audio                     |
+| System audio              | Only when the browser/OS dialog offers it                            |
+| Firefox / Safari / mobile | Limited or unavailable audio capture — offer Microphone / Demo Track |
+| DRM / protected media     | May not expose capturable audio even when playback works             |
 
 Prism never claims guaranteed support for every streaming provider.
 

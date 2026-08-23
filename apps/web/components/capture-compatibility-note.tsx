@@ -1,7 +1,7 @@
 "use client";
 
 import { detectDisplayMediaSupport } from "@prism/audio-engine";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 type CompatibilityState = {
   canAttempt: boolean;
@@ -9,21 +9,32 @@ type CompatibilityState = {
   getDisplayMedia: boolean;
 };
 
+function subscribeNoop(): () => void {
+  return () => undefined;
+}
+
+let cachedSnapshot: CompatibilityState | null | undefined;
+
+function readCompatibility(): CompatibilityState | null {
+  if (cachedSnapshot !== undefined) return cachedSnapshot;
+  if (typeof navigator === "undefined") {
+    cachedSnapshot = null;
+    return cachedSnapshot;
+  }
+  const support = detectDisplayMediaSupport(navigator.mediaDevices ?? null);
+  cachedSnapshot = {
+    canAttempt: support.canAttemptAudioCapture,
+    secureContext: support.secureContext,
+    getDisplayMedia: support.getDisplayMedia,
+  };
+  return cachedSnapshot;
+}
+
 /**
  * Honest, feature-detected guidance — never claims guaranteed provider support.
  */
 export function CaptureCompatibilityNote() {
-  const [state, setState] = useState<CompatibilityState | null>(null);
-
-  useEffect(() => {
-    const devices = typeof navigator !== "undefined" ? navigator.mediaDevices : null;
-    const support = detectDisplayMediaSupport(devices);
-    setState({
-      canAttempt: support.canAttemptAudioCapture,
-      secureContext: support.secureContext,
-      getDisplayMedia: support.getDisplayMedia,
-    });
-  }, []);
+  const state = useSyncExternalStore(subscribeNoop, readCompatibility, () => null);
 
   if (!state) return null;
 

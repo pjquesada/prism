@@ -26,10 +26,7 @@ import {
 import { VisualizerCanvas, registerPerfResourceSource } from "@prism/visual-engine";
 import { requireVisualizerPlugin } from "@prism/visualizers";
 
-import {
-  AudioModeSelector,
-  type CaptureInputOption,
-} from "@/components/audio-mode-selector";
+import { AudioModeSelector, type CaptureInputOption } from "@/components/audio-mode-selector";
 import { CaptureCompatibilityNote } from "@/components/capture-compatibility-note";
 import { CaptureMusicStatusPanel } from "@/components/capture-music-status";
 import { VisualizerSelector } from "@/components/visualizer-selector";

@@ -1,12 +1,7 @@
 import { isSecureAudioContext } from "./audio-context.js";
 
 export type BrowserCaptureFailureStatus =
-  | "denied"
-  | "no_audio"
-  | "unsupported"
-  | "inactive"
-  | "ended"
-  | "error";
+  "denied" | "no_audio" | "unsupported" | "inactive" | "ended" | "error";
 
 export type BrowserCaptureFailure = {
   status: BrowserCaptureFailureStatus;

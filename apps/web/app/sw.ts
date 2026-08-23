@@ -88,8 +88,9 @@ self.addEventListener("activate", (event) => {
           })
           .map((key) => caches.delete(key)),
       );
-      // Claim clients only after this worker has been explicitly activated.
-      await self.clients.claim();
+      // Do not clients.claim() here — claiming on first install fires controllerchange and
+      // can reload/wipe in-memory pairing UI. After an explicit Reload + skipWaiting, the
+      // page navigates and the new worker controls on the next load.
     })(),
   );
 });
