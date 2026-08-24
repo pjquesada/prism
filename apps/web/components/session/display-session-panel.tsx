@@ -101,8 +101,24 @@ export function DisplaySessionPanel() {
     );
   }
 
+  // Wait until the cookie restore resolves a role so hydration cannot briefly
+  // treat this surface as an audio authority.
+  if (sync.localRole === null && sync.connection === "connecting") {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6">
+        <p className="text-prism-mist" role="status">
+          Connecting…
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <main className="prism-display-root">
+    <main
+      className="prism-display-root"
+      data-testid="display-root"
+      data-role={sync.localRole ?? "unresolved"}
+    >
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <p className="font-display text-xl font-bold tracking-tight">Prism</p>
         <p className="text-sm text-prism-mist" data-testid="display-visualizer">

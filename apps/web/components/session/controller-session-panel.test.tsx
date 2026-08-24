@@ -46,6 +46,30 @@ vi.mock("@/components/session/session-visualizer-stage", () => ({
   SessionVisualizerStage: () => <div data-testid="controller-stage">stage</div>,
 }));
 
+vi.mock("@prism/audio-engine", () => {
+  return {
+    BrowserCaptureEngine: vi.fn(function BrowserCaptureEngine() {
+      return {
+        start: vi.fn(async () => undefined),
+        pause: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+        getStatus: vi.fn(() => "idle"),
+        subscribe: vi.fn(() => () => undefined),
+      };
+    }),
+    LiveListenEngine: vi.fn(function LiveListenEngine() {
+      return {
+        start: vi.fn(async () => undefined),
+        pause: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+        getStatus: vi.fn(() => "idle"),
+        subscribe: vi.fn(() => () => undefined),
+      };
+    }),
+  };
+});
+
 vi.mock("@/components/session/pairing-qr", () => ({
   PairingQr: () => null,
 }));
@@ -188,9 +212,9 @@ describe("ControllerSessionPanel visualizer selector", () => {
     expect(screen.queryByText(/Restoring session/i)).toBeNull();
   });
 
-  it("publishes a Live Listen playback mode without microphone payloads", async () => {
+  it("publishes a Capture Music playback mode without media payloads", async () => {
     render(<ControllerSessionPanel />);
-    fireEvent.click(await screen.findByTestId("audio-mode-live_listen"));
+    fireEvent.click(await screen.findByTestId("audio-mode-browser_capture"));
     await waitFor(() => {
       expect(publish).toHaveBeenCalled();
     });
@@ -199,6 +223,8 @@ describe("ControllerSessionPanel visualizer selector", () => {
       return payload.type === "playback.update" && payload.payload?.audioMode === "live_listen";
     })?.[0] as Record<string, unknown>;
     expect(message).toBeTruthy();
-    expect(JSON.stringify(message)).not.toMatch(/pcm|microphone|MediaStream|getUserMedia/);
+    expect(JSON.stringify(message)).not.toMatch(
+      /pcm|microphone|MediaStream|getUserMedia|getDisplayMedia|video/,
+    );
   });
 });

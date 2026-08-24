@@ -1,11 +1,17 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Phase 1E Live Listen", () => {
-  test("demo shell can open Live Listen and recover from a denied microphone", async ({ page }) => {
+test.describe("Phase 1E Capture Music", () => {
+  test("demo shell can open Capture Music and recover from denied browser capture", async ({
+    page,
+  }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "mediaDevices", {
         configurable: true,
         value: {
+          getDisplayMedia: () =>
+            Promise.reject(
+              Object.assign(new Error("Permission denied"), { name: "NotAllowedError" }),
+            ),
           getUserMedia: () =>
             Promise.reject(
               Object.assign(new Error("Permission denied"), { name: "NotAllowedError" }),
@@ -15,13 +21,13 @@ test.describe("Phase 1E Live Listen", () => {
     });
 
     await page.goto("/demo");
-    await expect(page.getByRole("button", { name: /^Live Listen$/i })).toBeVisible();
-    await page.getByRole("button", { name: /^Live Listen$/i }).click();
-    const status = page.getByTestId("live-listen-status");
+    await expect(page.getByRole("button", { name: /Capture Music/i })).toBeVisible();
+    await page.getByTestId("audio-mode-browser_capture").click();
+    const status = page.getByTestId("capture-music-status");
     await expect(status).toBeVisible();
     await expect(status).toHaveAttribute("data-live-listen-status", "denied");
     await expect(page.getByRole("button", { name: /Try again/i })).toBeVisible();
-    await expect(page.getByTestId("live-listen-privacy")).toBeVisible();
+    await expect(page.getByTestId("capture-music-privacy")).toBeVisible();
     await page.getByRole("button", { name: /Use Demo Track/i }).click();
     await expect(page.getByTestId("audio-mode-demo_track")).toHaveAttribute("aria-pressed", "true");
   });
@@ -29,10 +35,11 @@ test.describe("Phase 1E Live Listen", () => {
   test("combined mode keeps Demo Track as the default source", async ({ page }) => {
     await page.goto("/app");
     await expect(page.getByText(/Combined · Demo Track/i)).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Live Listen$/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Capture Music/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Microphone$/i })).toBeVisible();
   });
 
-  test("paired display follows compact envelopes and never requests a microphone", async ({
+  test("paired display follows compact envelopes and never requests capture APIs", async ({
     browser,
   }) => {
     const controllerContext = await browser.newContext();
@@ -44,19 +51,33 @@ test.describe("Phase 1E Live Listen", () => {
       osc.frequency.value = 220;
       osc.connect(dest);
       osc.start();
+      const videoTrack = dest.stream.getAudioTracks()[0] ? dest.stream.getAudioTracks()[0] : null;
       Object.defineProperty(navigator, "mediaDevices", {
         configurable: true,
         value: {
+          getDisplayMedia: async () => {
+            const stream = dest.stream;
+            // Simulate a display-media stream that also has a dummy video track API.
+            const tracks = [...stream.getAudioTracks()];
+            return {
+              getTracks: () => tracks,
+              getAudioTracks: () => stream.getAudioTracks(),
+              getVideoTracks: () => [],
+            } as unknown as MediaStream;
+          },
           getUserMedia: async () => dest.stream,
         },
       });
+      void videoTrack;
     });
     await displayContext.addInitScript(() => {
       const target = window as unknown as {
         __prismGumCalls: number;
+        __prismGdmCalls: number;
         __prismAudioElements: number;
       };
       target.__prismGumCalls = 0;
+      target.__prismGdmCalls = 0;
       target.__prismAudioElements = 0;
       const OriginalAudio = window.Audio;
       function PatchedAudio(src?: string) {
@@ -71,6 +92,10 @@ test.describe("Phase 1E Live Listen", () => {
           getUserMedia: async () => {
             target.__prismGumCalls += 1;
             throw new Error("display must not request a microphone");
+          },
+          getDisplayMedia: async () => {
+            target.__prismGdmCalls += 1;
+            throw new Error("display must not request display media");
           },
         },
       });
@@ -104,20 +129,24 @@ test.describe("Phase 1E Live Listen", () => {
     await controller.getByRole("button", { name: /^Play$/i }).click();
     const demoRequest = await demoBroadcast;
     expect(demoRequest.postData() ?? "").not.toMatch(
-      /pcm|fft|microphone|MediaStream|frequencyData/,
+      /pcm|fft|microphone|MediaStream|frequencyData|getDisplayMedia/,
     );
     await expect(display.getByTestId("remote-feature-energy")).toBeVisible({ timeout: 15_000 });
 
-    await controller.getByTestId("audio-mode-live_listen").click();
-    await expect(display.getByTestId("live-listen-follower")).toBeVisible({ timeout: 15_000 });
-    await expect(controller.getByTestId("live-listen-status")).toBeVisible({ timeout: 15_000 });
+    await controller.getByTestId("audio-mode-browser_capture").click();
+    await expect(display.getByTestId("capture-music-follower")).toBeVisible({ timeout: 15_000 });
+    await expect(controller.getByTestId("capture-music-status")).toBeVisible({ timeout: 15_000 });
     const gumCalls = await display.evaluate(
       () => (window as unknown as { __prismGumCalls: number }).__prismGumCalls,
+    );
+    const gdmCalls = await display.evaluate(
+      () => (window as unknown as { __prismGdmCalls: number }).__prismGdmCalls,
     );
     const audioElements = await display.evaluate(
       () => (window as unknown as { __prismAudioElements: number }).__prismAudioElements,
     );
     expect(gumCalls).toBe(0);
+    expect(gdmCalls).toBe(0);
     expect(audioElements).toBe(0);
 
     await controller.getByTestId("audio-mode-demo_track").click();

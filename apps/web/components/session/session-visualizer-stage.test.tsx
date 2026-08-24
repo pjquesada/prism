@@ -17,7 +17,7 @@ import {
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
-const { DemoTrackEngine, demoEngineMock, demoListeners, liveEngineMock, liveListeners } =
+const { DemoTrackEngine, demoEngineMock, demoListeners, captureEngineMock, captureListeners } =
   vi.hoisted(() => {
     const silent = {
       timestampMs: 0,
@@ -33,7 +33,7 @@ const { DemoTrackEngine, demoEngineMock, demoListeners, liveEngineMock, liveList
       high: 0,
     };
     const demoListeners = new Set<(event: unknown) => void>();
-    const liveListeners = new Set<(event: unknown) => void>();
+    const captureListeners = new Set<(event: unknown) => void>();
     const demoEngineMock = {
       prepare: vi.fn(async () => undefined),
       play: vi.fn(async () => undefined),
@@ -48,15 +48,16 @@ const { DemoTrackEngine, demoEngineMock, demoListeners, liveEngineMock, liveList
         return () => demoListeners.delete(listener);
       }),
     };
-    const liveEngineMock = {
+    const captureEngineMock = {
       start: vi.fn(async () => undefined),
       pause: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
       getStatus: vi.fn(() => "listening"),
       subscribe: vi.fn((listener: (event: unknown) => void) => {
-        liveListeners.add(listener);
+        captureListeners.add(listener);
         listener({ status: "listening", frame: { ...silent, energy: 0.2, rms: 0.2 } });
-        return () => liveListeners.delete(listener);
+        return () => captureListeners.delete(listener);
       }),
     };
     const DemoTrackEngine = vi.fn(function DemoTrackEngine() {
@@ -66,8 +67,8 @@ const { DemoTrackEngine, demoEngineMock, demoListeners, liveEngineMock, liveList
       DemoTrackEngine,
       demoEngineMock,
       demoListeners,
-      liveEngineMock,
-      liveListeners,
+      captureEngineMock,
+      captureListeners,
     };
   });
 
@@ -166,12 +167,14 @@ function snapshot(audioMode: "demo_track" | "live_listen" = "demo_track"): Sessi
 }
 
 function syncFor(
-  role: "controller" | "display" | "combined",
+  role: "controller" | "display" | "combined" | null,
   audioMode: "demo_track" | "live_listen" = "demo_track",
 ): SyncEngineState {
   const deviceId = role === "display" ? "display-1" : "controller-1";
   let state = createSyncEngineState();
-  state = setLocalIdentity(state, { deviceId, role });
+  if (role) {
+    state = setLocalIdentity(state, { deviceId, role });
+  }
   state = applySessionMessage(state, {
     type: "session.snapshot",
     seq: 2,
@@ -187,7 +190,7 @@ describe("SessionVisualizerStage audio ownership", () => {
   afterEach(() => {
     cleanup();
     demoListeners.clear();
-    liveListeners.clear();
+    captureListeners.clear();
     realReset();
   });
 
@@ -204,12 +207,16 @@ describe("SessionVisualizerStage audio ownership", () => {
         getUserMedia: vi.fn(async () => {
           throw new Error("getUserMedia should not run in these tests");
         }),
+        getDisplayMedia: vi.fn(async () => {
+          throw new Error("getDisplayMedia should not run in these tests");
+        }),
       },
     });
   });
 
-  it("does not construct Demo Track audio or request a microphone on a display-only device", () => {
+  it("does not construct Demo Track audio or request capture on a display-only device", () => {
     const gum = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    const gdm = navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>;
     render(
       <SessionVisualizerStage
         sync={syncFor("display")}
@@ -220,6 +227,7 @@ describe("SessionVisualizerStage audio ownership", () => {
     expect(DemoTrackEngine).not.toHaveBeenCalled();
     expect(demoEngineMock.play).not.toHaveBeenCalled();
     expect(gum).not.toHaveBeenCalled();
+    expect(gdm).not.toHaveBeenCalled();
     expect(screen.getByTestId("session-visualizer-stage").getAttribute("data-audio-output")).toBe(
       "silent",
     );
@@ -229,8 +237,9 @@ describe("SessionVisualizerStage audio ownership", () => {
     expect(realGetResourceCounts().mediaSources).toBe(0);
   });
 
-  it("never requests a microphone on a display during Live Listen", () => {
+  it("never requests getDisplayMedia or getUserMedia on a display during Capture Music", () => {
     const gum = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    const gdm = navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>;
     render(
       <SessionVisualizerStage
         sync={syncFor("display", "live_listen")}
@@ -240,7 +249,25 @@ describe("SessionVisualizerStage audio ownership", () => {
     );
     expect(DemoTrackEngine).not.toHaveBeenCalled();
     expect(gum).not.toHaveBeenCalled();
-    expect(screen.getByTestId("live-listen-follower")).toBeTruthy();
+    expect(gdm).not.toHaveBeenCalled();
+    expect(screen.getByTestId("capture-music-follower")).toBeTruthy();
+  });
+
+  it("does not construct audio output while the local role is unresolved", () => {
+    render(
+      <SessionVisualizerStage
+        sync={syncFor(null)}
+        isAudioAuthority={false}
+        subscribeFeatures={() => () => undefined}
+      />,
+    );
+    expect(DemoTrackEngine).not.toHaveBeenCalled();
+    expect(screen.getByTestId("session-visualizer-stage").getAttribute("data-audio-output")).toBe(
+      "silent",
+    );
+    expect(screen.getByTestId("session-visualizer-stage").getAttribute("data-role-resolved")).toBe(
+      "false",
+    );
   });
 
   it("creates exactly one Demo Track engine for a controller", () => {
@@ -283,7 +310,9 @@ describe("SessionVisualizerStage audio ownership", () => {
     const envelope = publishFeatures.mock.calls[0]?.[0] as AudioFeatureEnvelope;
     expect(envelope.levels).toHaveLength(8);
     expect(envelope).not.toHaveProperty("bands");
-    expect(JSON.stringify(envelope)).not.toMatch(/pcm|fft|microphone|MediaStream|frequencyData/);
+    expect(JSON.stringify(envelope)).not.toMatch(
+      /pcm|fft|microphone|MediaStream|frequencyData|video/,
+    );
   });
 
   it("applies remote Demo Track envelopes without rerendering at 20 Hz", () => {
@@ -325,7 +354,7 @@ describe("SessionVisualizerStage audio ownership", () => {
     );
   });
 
-  it("disposes the Demo Track engine when switching to Live Listen", () => {
+  it("disposes the Demo Track engine when switching to Capture Music", () => {
     const { rerender } = render(
       <SessionVisualizerStage sync={syncFor("controller")} isAudioAuthority />,
     );
@@ -334,7 +363,8 @@ describe("SessionVisualizerStage audio ownership", () => {
       <SessionVisualizerStage
         sync={syncFor("controller", "live_listen")}
         isAudioAuthority
-        liveListenEngine={liveEngineMock as never}
+        captureEngine={captureEngineMock as never}
+        captureSource="browser_capture"
       />,
     );
     expect(demoEngineMock.dispose).toHaveBeenCalled();

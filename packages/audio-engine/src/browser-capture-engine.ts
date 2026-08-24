@@ -3,38 +3,43 @@ import { audioFeatureFrameSchema, type AudioFeatureFrame, type AudioMode } from 
 import { createAudioContext, isSecureAudioContext } from "./audio-context.js";
 import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE, FEATURE_INTERVAL_MS } from "./constants.js";
 import {
+  buildBrowserCaptureConstraints,
+  canRequestBrowserCapture,
+  classifyGetDisplayMediaError,
+  discardCapturedVideoTracks,
+  NO_AUDIO_SHARED_MESSAGE,
+  stopDisplayMediaStream,
+  streamHasAudioTrack,
+  type BrowserCaptureFailureStatus,
+} from "./display-media.js";
+import {
   buildFeatureFrame,
   createFeatureExtractorState,
   silentFrame,
   type FeatureExtractorState,
 } from "./feature-math.js";
-import {
-  LIVE_LISTEN_AUDIO_CONSTRAINTS,
-  canRequestMicrophone,
-  classifyGetUserMediaError,
-  stopMediaStream,
-  type LiveListenFailureStatus,
-} from "./media-permission.js";
 import { acquireResource } from "./runtime-resources.js";
 
-export const LIVE_LISTEN_SOUND_THRESHOLD = 0.035;
+export const BROWSER_CAPTURE_SOUND_THRESHOLD = 0.035;
 
-export type LiveListenEngineStatus =
+export type BrowserCaptureEngineStatus =
   | "idle"
   | "requesting"
+  | "waiting"
   | "listening"
+  | "no_audio"
+  | "ended"
   | "paused"
   | "denied"
-  | "unavailable"
   | "unsupported"
   | "inactive"
   | "error";
 
-export type LiveListenEngineOptions = {
+export type BrowserCaptureEngineOptions = {
   fftSize?: number;
   bandCount?: number;
   validateFrames?: boolean;
-  getUserMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
+  getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
   createContext?: () => AudioContext | null;
   isSecureContext?: () => boolean;
   requestAnimationFrame?: (callback: FrameRequestCallback) => number;
@@ -42,31 +47,34 @@ export type LiveListenEngineOptions = {
   now?: () => number;
 };
 
-export type LiveListenEngineListener = (event: {
-  status: LiveListenEngineStatus;
+export type BrowserCaptureEngineListener = (event: {
+  status: BrowserCaptureEngineStatus;
   frame: AudioFeatureFrame;
   errorMessage?: string;
 }) => void;
 
 /**
- * On-device microphone analysis. Numeric feature frames only.
- * Never records, saves, or transmits PCM / MediaStream audio.
+ * Controller-only browser/system audio capture via getDisplayMedia.
+ * Analyzes the audio track locally with Web Audio. Never connects to speakers,
+ * never uses MediaRecorder, never transmits MediaStream / PCM / video.
  */
-export class LiveListenEngine {
+export class BrowserCaptureEngine {
   readonly mode: AudioMode = "live_listen";
 
   private readonly fftSize: number;
   private readonly bandCount: number;
   private readonly validateFrames: boolean;
-  private readonly getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
+  private readonly getDisplayMedia: (
+    constraints: DisplayMediaStreamOptions,
+  ) => Promise<MediaStream>;
   private readonly createContext: () => AudioContext | null;
   private readonly isSecure: () => boolean;
   private readonly raf: (callback: FrameRequestCallback) => number;
   private readonly caf: (handle: number) => void;
   private readonly now: () => number;
-  private readonly listeners = new Set<LiveListenEngineListener>();
+  private readonly listeners = new Set<BrowserCaptureEngineListener>();
 
-  private status: LiveListenEngineStatus = "idle";
+  private status: BrowserCaptureEngineStatus = "idle";
   private errorMessage: string | undefined;
   private frame: AudioFeatureFrame;
   private extractor: FeatureExtractorState;
@@ -81,22 +89,23 @@ export class LiveListenEngine {
   private lastEmitMs = 0;
   private disposed = false;
   private contextStateHandler: (() => void) | null = null;
+  private trackEndedHandler: (() => void) | null = null;
   private releaseContext: (() => void) | null = null;
   private releaseSource: (() => void) | null = null;
   private releaseLoop: (() => void) | null = null;
 
-  constructor(options: LiveListenEngineOptions = {}) {
+  constructor(options: BrowserCaptureEngineOptions = {}) {
     this.fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
     this.bandCount = options.bandCount ?? DEFAULT_BAND_COUNT;
     this.validateFrames = options.validateFrames ?? false;
-    this.getUserMedia =
-      options.getUserMedia ??
+    this.getDisplayMedia =
+      options.getDisplayMedia ??
       ((constraints) => {
         const devices = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
-        if (!devices?.getUserMedia) {
-          return Promise.reject(new Error("getUserMedia is not available."));
+        if (!devices?.getDisplayMedia) {
+          return Promise.reject(new Error("getDisplayMedia is not available."));
         }
-        return devices.getUserMedia(constraints);
+        return devices.getDisplayMedia(constraints);
       });
     this.createContext = options.createContext ?? createAudioContext;
     this.isSecure = options.isSecureContext ?? isSecureAudioContext;
@@ -114,7 +123,7 @@ export class LiveListenEngine {
     this.extractor = createFeatureExtractorState(this.bandCount);
   }
 
-  getStatus(): LiveListenEngineStatus {
+  getStatus(): BrowserCaptureEngineStatus {
     return this.status;
   }
 
@@ -126,7 +135,7 @@ export class LiveListenEngine {
     return this.errorMessage;
   }
 
-  subscribe(listener: LiveListenEngineListener): () => void {
+  subscribe(listener: BrowserCaptureEngineListener): () => void {
     this.listeners.add(listener);
     listener({ status: this.status, frame: this.frame, errorMessage: this.errorMessage });
     return () => {
@@ -136,7 +145,9 @@ export class LiveListenEngine {
 
   async start(): Promise<void> {
     if (this.disposed) return;
-    if (this.status === "listening" || this.status === "requesting") return;
+    if (this.status === "requesting" || this.status === "waiting" || this.status === "listening") {
+      return;
+    }
 
     if (this.status === "paused" && this.analyser && this.stream) {
       const context = this.audioContext;
@@ -144,34 +155,43 @@ export class LiveListenEngine {
         try {
           await context.resume();
         } catch {
-          this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
+          this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
           return;
         }
       }
       if (context && context.state !== "running") {
-        this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
+        this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
         return;
       }
-      this.setStatus("listening");
+      this.setStatus(
+        this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting",
+      );
       this.startLoop();
       return;
     }
 
     const devices = typeof navigator !== "undefined" ? (navigator.mediaDevices ?? null) : null;
-    if (!canRequestMicrophone(devices ?? { getUserMedia: this.getUserMedia }, this.isSecure())) {
-      this.setFailure("unsupported", "Microphone access requires a secure browser context.");
+    if (
+      !canRequestBrowserCapture(
+        devices ?? { getDisplayMedia: this.getDisplayMedia },
+        this.isSecure(),
+      )
+    ) {
+      this.setFailure(
+        "unsupported",
+        "Browser/system audio capture is unavailable here. Prefer Chrome or Edge on desktop, or use Microphone / Demo Track.",
+      );
       return;
     }
 
     this.setStatus("requesting");
 
-    // Invoke getUserMedia and AudioContext construction before any await so a
-    // click/tap user gesture is still valid (Safari/iOS especially).
+    // Invoke getDisplayMedia and AudioContext before any await so the user gesture stays valid.
     let streamPromise: Promise<MediaStream>;
     try {
-      streamPromise = this.getUserMedia(LIVE_LISTEN_AUDIO_CONSTRAINTS);
+      streamPromise = this.getDisplayMedia(buildBrowserCaptureConstraints());
     } catch (error) {
-      const failure = classifyGetUserMediaError(error);
+      const failure = classifyGetDisplayMediaError(error);
       this.setFailure(failure.status, failure.message);
       return;
     }
@@ -180,87 +200,109 @@ export class LiveListenEngine {
     const resumePromise =
       nextContext?.state === "suspended" ? nextContext.resume() : Promise.resolve();
 
-    await this.tearDownGraph();
+    await this.tearDownGraph({ keepStatus: true });
     this.audioContext = nextContext;
 
     try {
       await resumePromise;
     } catch {
-      stopMediaStream(await streamPromise.catch(() => null));
-      this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
+      stopDisplayMediaStream(await streamPromise.catch(() => null));
+      this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
       return;
     }
 
+    let stream: MediaStream;
     try {
-      this.stream = await streamPromise;
+      stream = await streamPromise;
     } catch (error) {
-      const failure = classifyGetUserMediaError(error);
+      const failure = classifyGetDisplayMediaError(error);
       this.setFailure(failure.status, failure.message);
       return;
     }
 
     if (this.disposed) {
-      stopMediaStream(this.stream);
-      this.stream = null;
+      stopDisplayMediaStream(stream);
       return;
     }
 
-    if (!this.audioContext || !this.stream) {
-      stopMediaStream(this.stream);
-      this.stream = null;
+    // Never render, encode, or retain video — discard immediately.
+    discardCapturedVideoTracks(stream);
+
+    if (!streamHasAudioTrack(stream)) {
+      stopDisplayMediaStream(stream);
+      this.setFailure("no_audio", NO_AUDIO_SHARED_MESSAGE);
+      return;
+    }
+
+    if (!this.audioContext) {
+      stopDisplayMediaStream(stream);
       this.setFailure("unsupported", "Web Audio API is not available in this browser.");
       return;
     }
 
     if (this.audioContext.state !== "running") {
-      stopMediaStream(this.stream);
-      this.stream = null;
-      this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
+      stopDisplayMediaStream(stream);
+      this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
       return;
     }
+
+    this.stream = stream;
 
     try {
       this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = this.fftSize;
       this.analyser.smoothingTimeConstant = 0.35;
-      // Intentionally not connected to destination — microphone must not play back.
+      // Intentionally not connected to destination — source app already plays audio.
       this.sourceNode.connect(this.analyser);
       this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
       this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
       this.releaseContext = acquireResource("audioContexts");
       this.releaseSource = acquireResource("mediaSources");
       this.bindContextState(this.audioContext);
+      this.bindTrackEnded(this.stream);
     } catch {
-      await this.tearDownGraph();
-      this.setFailure("error", "Could not start microphone capture. Try again or use Demo Track.");
+      await this.tearDownGraph({ keepStatus: true });
+      this.setFailure(
+        "error",
+        "Could not start Capture Music. Try again or use Microphone / Demo Track.",
+      );
       return;
     }
 
-    this.setStatus("listening");
+    this.setStatus("waiting");
     this.startLoop();
   }
 
   async pause(): Promise<void> {
-    if (this.status !== "listening") return;
+    if (this.status !== "waiting" && this.status !== "listening") return;
     this.stopLoop();
     this.setStatus("paused");
+  }
+
+  /** Stop capture tracks and close audio resources. Does not auto-restart. */
+  async stop(): Promise<void> {
+    await this.tearDownGraph({ keepStatus: true });
+    if (this.status !== "ended" && this.status !== "no_audio" && this.status !== "denied") {
+      this.setStatus("ended");
+    }
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    await this.tearDownGraph();
+    await this.tearDownGraph({ keepStatus: true });
     this.listeners.clear();
     this.status = "idle";
     this.errorMessage = undefined;
     this.frame = silentFrame(this.now(), this.bandCount);
   }
 
-  private async tearDownGraph(): Promise<void> {
+  private async tearDownGraph(options?: { keepStatus?: boolean }): Promise<void> {
     this.stopLoop();
     this.unbindContextState();
-    stopMediaStream(this.stream);
+    this.unbindTrackEnded();
+    stopDisplayMediaStream(this.stream);
     this.stream = null;
 
     try {
@@ -290,15 +332,53 @@ export class LiveListenEngine {
       }
       this.audioContext = null;
     }
+
+    if (!options?.keepStatus && !this.disposed) {
+      this.frame = silentFrame(this.now(), this.bandCount);
+    }
+  }
+
+  private bindTrackEnded(stream: MediaStream): void {
+    this.unbindTrackEnded();
+    const handler = () => {
+      if (this.disposed) return;
+      const alive = streamHasAudioTrack(stream);
+      if (alive) return;
+      void this.tearDownGraph({ keepStatus: true }).then(() => {
+        if (this.disposed) return;
+        this.setFailure(
+          "ended",
+          "Sharing stopped. Click Capture Music to choose a music source again.",
+        );
+      });
+    };
+    this.trackEndedHandler = handler;
+    for (const track of stream.getAudioTracks()) {
+      track.addEventListener("ended", handler);
+    }
+  }
+
+  private unbindTrackEnded(): void {
+    if (this.stream && this.trackEndedHandler) {
+      for (const track of this.stream.getAudioTracks()) {
+        try {
+          track.removeEventListener("ended", this.trackEndedHandler);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this.trackEndedHandler = null;
   }
 
   private bindContextState(context: AudioContext): void {
     this.unbindContextState();
     const handler = () => {
-      if (this.disposed || this.status !== "listening") return;
+      if (this.disposed) return;
+      if (this.status !== "waiting" && this.status !== "listening") return;
       const state = this.audioContext?.state as string | undefined;
       if (state === "suspended" || state === "interrupted") {
-        this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
+        this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
       }
     };
     this.contextStateHandler = handler;
@@ -338,6 +418,14 @@ export class LiveListenEngine {
       });
       this.extractor = result.state;
       this.frame = this.validateFrames ? audioFeatureFrameSchema.parse(result.frame) : result.frame;
+
+      if (this.status === "waiting" || this.status === "listening") {
+        const next = this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting";
+        if (next !== this.status) {
+          this.status = next;
+          this.errorMessage = undefined;
+        }
+      }
       this.emit();
     };
     this.rafId = this.raf(tick);
@@ -352,18 +440,18 @@ export class LiveListenEngine {
     this.releaseLoop = null;
   }
 
-  private setStatus(status: LiveListenEngineStatus): void {
+  private setStatus(status: BrowserCaptureEngineStatus): void {
     this.status = status;
-    if (status === "listening") {
+    if (status === "waiting" || status === "listening") {
       this.errorMessage = undefined;
     }
-    if (status !== "listening") {
+    if (status !== "waiting" && status !== "listening") {
       this.frame = silentFrame(this.now(), this.bandCount);
     }
     this.emit();
   }
 
-  private setFailure(status: LiveListenFailureStatus, message: string): void {
+  private setFailure(status: BrowserCaptureFailureStatus, message: string): void {
     this.status = status;
     this.errorMessage = message;
     this.frame = silentFrame(this.now(), this.bandCount);
