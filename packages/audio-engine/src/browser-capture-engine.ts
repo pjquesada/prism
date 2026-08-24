@@ -1,7 +1,7 @@
-import { audioFeatureFrameSchema, type AudioFeatureFrame, type AudioMode } from "@prism/contracts";
+import { type AudioFeatureFrame, type AudioMode } from "@prism/contracts";
 
 import { createAudioContext, isSecureAudioContext } from "./audio-context.js";
-import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE, FEATURE_INTERVAL_MS } from "./constants.js";
+import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE } from "./constants.js";
 import {
   buildBrowserCaptureConstraints,
   canRequestBrowserCapture,
@@ -12,13 +12,8 @@ import {
   streamHasAudioTrack,
   type BrowserCaptureFailureStatus,
 } from "./display-media.js";
-import {
-  buildFeatureFrame,
-  createFeatureExtractorState,
-  silentFrame,
-  type FeatureExtractorState,
-} from "./feature-math.js";
-import { acquireResource } from "./runtime-resources.js";
+import { silentFrame } from "./feature-math.js";
+import { isLiveAudioTrack, MediaStreamAnalysisGraph } from "./media-stream-analysis.js";
 
 export const BROWSER_CAPTURE_SOUND_THRESHOLD = 0.035;
 
@@ -55,13 +50,12 @@ export type BrowserCaptureEngineListener = (event: {
 
 /**
  * Controller-only browser/system audio capture via getDisplayMedia.
- * Analyzes the audio track locally with Web Audio. Never connects to speakers,
+ * Analyzes the audio track locally with Web Audio. Never connects capture to speakers,
  * never uses MediaRecorder, never transmits MediaStream / PCM / video.
  */
 export class BrowserCaptureEngine {
   readonly mode: AudioMode = "live_listen";
 
-  private readonly fftSize: number;
   private readonly bandCount: number;
   private readonly validateFrames: boolean;
   private readonly getDisplayMedia: (
@@ -69,33 +63,21 @@ export class BrowserCaptureEngine {
   ) => Promise<MediaStream>;
   private readonly createContext: () => AudioContext | null;
   private readonly isSecure: () => boolean;
-  private readonly raf: (callback: FrameRequestCallback) => number;
-  private readonly caf: (handle: number) => void;
   private readonly now: () => number;
   private readonly listeners = new Set<BrowserCaptureEngineListener>();
+  private readonly graph: MediaStreamAnalysisGraph;
 
   private status: BrowserCaptureEngineStatus = "idle";
   private errorMessage: string | undefined;
   private frame: AudioFeatureFrame;
-  private extractor: FeatureExtractorState;
-
-  private audioContext: AudioContext | null = null;
   private stream: MediaStream | null = null;
-  private sourceNode: MediaStreamAudioSourceNode | null = null;
-  private analyser: AnalyserNode | null = null;
-  private frequencyBuffer: Uint8Array<ArrayBuffer> | null = null;
-  private timeBuffer: Uint8Array<ArrayBuffer> | null = null;
-  private rafId: number | null = null;
-  private lastEmitMs = 0;
+  private audioContext: AudioContext | null = null;
+  private captureGeneration = 0;
   private disposed = false;
   private contextStateHandler: (() => void) | null = null;
   private trackEndedHandler: (() => void) | null = null;
-  private releaseContext: (() => void) | null = null;
-  private releaseSource: (() => void) | null = null;
-  private releaseLoop: (() => void) | null = null;
 
   constructor(options: BrowserCaptureEngineOptions = {}) {
-    this.fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
     this.bandCount = options.bandCount ?? DEFAULT_BAND_COUNT;
     this.validateFrames = options.validateFrames ?? false;
     this.getDisplayMedia =
@@ -109,18 +91,17 @@ export class BrowserCaptureEngine {
       });
     this.createContext = options.createContext ?? createAudioContext;
     this.isSecure = options.isSecureContext ?? isSecureAudioContext;
-    this.raf =
-      options.requestAnimationFrame ??
-      ((callback) => (typeof window !== "undefined" ? window.requestAnimationFrame(callback) : 0));
-    this.caf =
-      options.cancelAnimationFrame ??
-      ((handle) => {
-        if (typeof window !== "undefined") window.cancelAnimationFrame(handle);
-      });
     this.now =
       options.now ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
+    this.graph = new MediaStreamAnalysisGraph({
+      fftSize: options.fftSize ?? DEFAULT_FFT_SIZE,
+      bandCount: this.bandCount,
+      validateFrames: this.validateFrames,
+      requestAnimationFrame: options.requestAnimationFrame,
+      cancelAnimationFrame: options.cancelAnimationFrame,
+      now: this.now,
+    });
     this.frame = silentFrame(0, this.bandCount);
-    this.extractor = createFeatureExtractorState(this.bandCount);
   }
 
   getStatus(): BrowserCaptureEngineStatus {
@@ -128,11 +109,15 @@ export class BrowserCaptureEngine {
   }
 
   getFrame(): AudioFeatureFrame {
-    return this.frame;
+    return this.graph.getStream() ? this.graph.getFrame() : this.frame;
   }
 
   getErrorMessage(): string | undefined {
     return this.errorMessage;
+  }
+
+  getAnalysisGraph(): MediaStreamAnalysisGraph {
+    return this.graph;
   }
 
   subscribe(listener: BrowserCaptureEngineListener): () => void {
@@ -149,7 +134,7 @@ export class BrowserCaptureEngine {
       return;
     }
 
-    if (this.status === "paused" && this.analyser && this.stream) {
+    if (this.status === "paused" && this.graph.getStream()) {
       const context = this.audioContext;
       if (context?.state === "suspended") {
         try {
@@ -163,10 +148,11 @@ export class BrowserCaptureEngine {
         this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
         return;
       }
+      const gen = this.graph.getGeneration();
       this.setStatus(
         this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting",
       );
-      this.startLoop();
+      this.graph.startLoop(gen);
       return;
     }
 
@@ -184,9 +170,12 @@ export class BrowserCaptureEngine {
       return;
     }
 
+    const oldGen = this.graph.getGeneration();
+    await this.disposeCapture(oldGen, { keepStatus: true });
+    const gen = this.graph.beginGeneration();
+    this.captureGeneration = gen;
     this.setStatus("requesting");
 
-    // Invoke getDisplayMedia and AudioContext before any await so the user gesture stays valid.
     let streamPromise: Promise<MediaStream>;
     try {
       streamPromise = this.getDisplayMedia(buildBrowserCaptureConstraints());
@@ -200,13 +189,15 @@ export class BrowserCaptureEngine {
     const resumePromise =
       nextContext?.state === "suspended" ? nextContext.resume() : Promise.resolve();
 
-    await this.tearDownGraph({ keepStatus: true });
+    if (gen !== this.captureGeneration) return;
+
     this.audioContext = nextContext;
 
     try {
       await resumePromise;
     } catch {
       stopDisplayMediaStream(await streamPromise.catch(() => null));
+      if (gen !== this.captureGeneration) return;
       this.setFailure("inactive", "Audio context is inactive. Click Capture Music again.");
       return;
     }
@@ -215,17 +206,17 @@ export class BrowserCaptureEngine {
     try {
       stream = await streamPromise;
     } catch (error) {
+      if (gen !== this.captureGeneration) return;
       const failure = classifyGetDisplayMediaError(error);
       this.setFailure(failure.status, failure.message);
       return;
     }
 
-    if (this.disposed) {
+    if (this.disposed || gen !== this.captureGeneration) {
       stopDisplayMediaStream(stream);
       return;
     }
 
-    // Never render, encode, or retain video — discard immediately.
     discardCapturedVideoTracks(stream);
 
     if (!streamHasAudioTrack(stream)) {
@@ -249,20 +240,18 @@ export class BrowserCaptureEngine {
     this.stream = stream;
 
     try {
-      this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = this.fftSize;
-      this.analyser.smoothingTimeConstant = 0.35;
-      // Intentionally not connected to destination — source app already plays audio.
-      this.sourceNode.connect(this.analyser);
-      this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
-      this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
-      this.releaseContext = acquireResource("audioContexts");
-      this.releaseSource = acquireResource("mediaSources");
-      this.bindContextState(this.audioContext);
-      this.bindTrackEnded(this.stream);
+      await this.graph.connect(stream, this.audioContext, gen);
+      if (gen !== this.captureGeneration) {
+        stopDisplayMediaStream(stream);
+        this.stream = null;
+        return;
+      }
+      this.bindContextState(this.audioContext, gen);
+      this.bindTrackEnded(stream, gen);
+      this.graph.setFrameListener((frame) => this.handleAnalysisFrame(frame));
     } catch {
-      await this.tearDownGraph({ keepStatus: true });
+      if (gen !== this.captureGeneration) return;
+      await this.disposeCapture(gen, { keepStatus: true });
       this.setFailure(
         "error",
         "Could not start Capture Music. Try again or use Microphone / Demo Track.",
@@ -271,18 +260,18 @@ export class BrowserCaptureEngine {
     }
 
     this.setStatus("waiting");
-    this.startLoop();
+    this.graph.startLoop(gen);
   }
 
   async pause(): Promise<void> {
     if (this.status !== "waiting" && this.status !== "listening") return;
-    this.stopLoop();
+    this.graph.stopLoop();
     this.setStatus("paused");
   }
 
-  /** Stop capture tracks and close audio resources. Does not auto-restart. */
   async stop(): Promise<void> {
-    await this.tearDownGraph({ keepStatus: true });
+    const gen = this.captureGeneration;
+    await this.disposeCapture(gen, { keepStatus: true });
     if (this.status !== "ended" && this.status !== "no_audio" && this.status !== "denied") {
       this.setStatus("ended");
     }
@@ -291,38 +280,24 @@ export class BrowserCaptureEngine {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    await this.tearDownGraph({ keepStatus: true });
+    const gen = this.captureGeneration;
+    await this.disposeCapture(gen, { keepStatus: true });
     this.listeners.clear();
     this.status = "idle";
     this.errorMessage = undefined;
     this.frame = silentFrame(this.now(), this.bandCount);
   }
 
-  private async tearDownGraph(options?: { keepStatus?: boolean }): Promise<void> {
-    this.stopLoop();
+  private async disposeCapture(
+    generation: number,
+    options?: { keepStatus?: boolean },
+  ): Promise<void> {
+    this.graph.setFrameListener(null);
     this.unbindContextState();
     this.unbindTrackEnded();
     stopDisplayMediaStream(this.stream);
     this.stream = null;
-
-    try {
-      this.sourceNode?.disconnect();
-    } catch {
-      // already disconnected
-    }
-    try {
-      this.analyser?.disconnect();
-    } catch {
-      // already disconnected
-    }
-    this.sourceNode = null;
-    this.analyser = null;
-    this.frequencyBuffer = null;
-    this.timeBuffer = null;
-    this.releaseSource?.();
-    this.releaseSource = null;
-    this.releaseContext?.();
-    this.releaseContext = null;
+    await this.graph.dispose(generation);
 
     if (this.audioContext) {
       try {
@@ -338,19 +313,16 @@ export class BrowserCaptureEngine {
     }
   }
 
-  private bindTrackEnded(stream: MediaStream): void {
+  private bindTrackEnded(stream: MediaStream, generation: number): void {
     this.unbindTrackEnded();
     const handler = () => {
-      if (this.disposed) return;
-      const alive = streamHasAudioTrack(stream);
-      if (alive) return;
-      void this.tearDownGraph({ keepStatus: true }).then(() => {
-        if (this.disposed) return;
-        this.setFailure(
-          "ended",
-          "Sharing stopped. Click Capture Music to choose a music source again.",
-        );
-      });
+      if (this.disposed || generation !== this.captureGeneration) return;
+      if (streamHasAudioTrack(stream)) return;
+      this.setFailure(
+        "ended",
+        "Sharing stopped. Click Capture Music to choose a music source again.",
+      );
+      void this.disposeCapture(generation, { keepStatus: true });
     };
     this.trackEndedHandler = handler;
     for (const track of stream.getAudioTracks()) {
@@ -371,10 +343,10 @@ export class BrowserCaptureEngine {
     this.trackEndedHandler = null;
   }
 
-  private bindContextState(context: AudioContext): void {
+  private bindContextState(context: AudioContext, generation: number): void {
     this.unbindContextState();
     const handler = () => {
-      if (this.disposed) return;
+      if (this.disposed || generation !== this.captureGeneration) return;
       if (this.status !== "waiting" && this.status !== "listening") return;
       const state = this.audioContext?.state as string | undefined;
       if (state === "suspended" || state === "interrupted") {
@@ -396,48 +368,19 @@ export class BrowserCaptureEngine {
     this.contextStateHandler = null;
   }
 
-  private startLoop(): void {
-    if (this.rafId !== null) return;
-    this.releaseLoop = acquireResource("animationLoops");
-    const tick = (now: number) => {
-      this.rafId = this.raf(tick);
-      if (!this.analyser || !this.frequencyBuffer || !this.timeBuffer || !this.audioContext) return;
-      if (now - this.lastEmitMs < FEATURE_INTERVAL_MS) return;
-      this.lastEmitMs = now;
-
-      this.analyser.getByteFrequencyData(this.frequencyBuffer);
-      this.analyser.getByteTimeDomainData(this.timeBuffer);
-
-      const result = buildFeatureFrame(this.extractor, {
-        timeDomain: this.timeBuffer,
-        frequencyData: this.frequencyBuffer,
-        sampleRate: this.audioContext.sampleRate,
-        fftSize: this.analyser.fftSize,
-        timestampMs: now,
-        bandCount: this.bandCount,
-      });
-      this.extractor = result.state;
-      this.frame = this.validateFrames ? audioFeatureFrameSchema.parse(result.frame) : result.frame;
-
-      if (this.status === "waiting" || this.status === "listening") {
-        const next = this.frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD ? "listening" : "waiting";
-        if (next !== this.status) {
-          this.status = next;
-          this.errorMessage = undefined;
-        }
+  private handleAnalysisFrame(frame: AudioFeatureFrame): void {
+    this.frame = frame;
+    if (this.status === "waiting" || this.status === "listening") {
+      const next =
+        frame.energy >= BROWSER_CAPTURE_SOUND_THRESHOLD && isLiveAudioTrack(this.stream)
+          ? "listening"
+          : "waiting";
+      if (next !== this.status) {
+        this.status = next;
+        this.errorMessage = undefined;
       }
-      this.emit();
-    };
-    this.rafId = this.raf(tick);
-  }
-
-  private stopLoop(): void {
-    if (this.rafId !== null) {
-      this.caf(this.rafId);
-      this.rafId = null;
     }
-    this.releaseLoop?.();
-    this.releaseLoop = null;
+    this.emit();
   }
 
   private setStatus(status: BrowserCaptureEngineStatus): void {

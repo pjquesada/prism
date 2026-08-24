@@ -33,6 +33,10 @@ import {
 } from "@prism/sync-engine";
 
 import { CaptureMusicStatusPanel } from "@/components/capture-music-status";
+import {
+  InputDiagnosticsPanel,
+  type InputDiagnosticsMetrics,
+} from "@/components/input-diagnostics-panel";
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import { PLACEHOLDER_ARTWORK_PATH } from "@/lib/local-artwork";
 import type { CaptureInputOption } from "@/components/audio-mode-selector";
@@ -112,6 +116,18 @@ export function SessionVisualizerStage({
   const meterFillRef = useRef<HTMLDivElement | null>(null);
   const publishFeaturesRef = useRef(publishFeatures);
   const canOwnAudioRef = useRef(canOwnAudio);
+  const publishCountRef = useRef(0);
+  const publishWindowStartRef = useRef(0);
+  const [diagnosticMetrics, setDiagnosticMetrics] = useState<InputDiagnosticsMetrics>({
+    inputMode: captureSource,
+    capturePermissionResult: "idle",
+    realtimeConnectionStatus: sync.connection,
+    envelopesPublishedPerSecond: 0,
+  });
+
+  useEffect(() => {
+    publishWindowStartRef.current = performance.now();
+  }, []);
   const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
     const publish = publishFeaturesRef.current;
     if (!canOwnAudioRef.current || !publish) return;
@@ -120,6 +136,17 @@ export function SessionVisualizerStage({
     lastPublishMsRef.current = now;
     frameSeqRef.current += 1;
     publish(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
+    publishCountRef.current += 1;
+    const windowStart = publishWindowStartRef.current || now;
+    const elapsed = Math.max(1, now - windowStart);
+    if (elapsed >= 1000) {
+      setDiagnosticMetrics((current) => ({
+        ...current,
+        envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
+      }));
+      publishCountRef.current = 0;
+      publishWindowStartRef.current = now;
+    }
   });
 
   const [engineReady, setEngineReady] = useState(false);
@@ -128,11 +155,21 @@ export function SessionVisualizerStage({
   const [captureStatus, setCaptureStatus] = useState<CaptureEngineStatus>("idle");
   const [captureError, setCaptureError] = useState<string | undefined>();
   const [hasSound, setHasSound] = useState(false);
+  const [inputLevel, setInputLevel] = useState(0);
 
   useEffect(() => {
     publishFeaturesRef.current = publishFeatures;
     canOwnAudioRef.current = canOwnAudio;
   }, [publishFeatures, canOwnAudio]);
+
+  const liveDiagnosticMetrics = useMemo<InputDiagnosticsMetrics>(
+    () => ({
+      ...diagnosticMetrics,
+      inputMode: captureSource,
+      realtimeConnectionStatus: sync.connection,
+    }),
+    [captureSource, diagnosticMetrics, sync.connection],
+  );
 
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
   const visualizerId: VisualizerId =
@@ -198,6 +235,7 @@ export function SessionVisualizerStage({
     const unsubscribe = engine.subscribe((event) => {
       featuresRef.current = event.frame;
       writeMeter(meterFillRef.current, event.frame.energy);
+      setInputLevel(event.frame.energy);
       const detected = event.frame.energy >= soundThreshold;
       if (detected !== lastHasSoundRef.current) {
         lastHasSoundRef.current = detected;
@@ -207,6 +245,11 @@ export function SessionVisualizerStage({
         lastCaptureStatusRef.current = event.status;
         setCaptureStatus(event.status);
         setCaptureError(event.errorMessage);
+        setDiagnosticMetrics((current) => ({
+          ...current,
+          capturePermissionResult: event.status,
+          lastErrorCategory: event.errorMessage ?? null,
+        }));
         setEngineReady(isCaptureActiveStatus(event.status) || event.status === "paused");
         setNeedsGesture(
           event.status === "idle" ||
@@ -396,6 +439,7 @@ export function SessionVisualizerStage({
             source={micMode ? "microphone" : "browser"}
             errorMessage={captureError}
             hasSound={hasSound}
+            inputLevel={inputLevel}
             meterFillRef={meterFillRef}
             onRetry={() => {
               if (captureEngine) {
@@ -444,6 +488,13 @@ export function SessionVisualizerStage({
           </span>
         ) : null}
       </VisualizerStageFrame>
+      {captureMode && canOwnAudio ? (
+        <InputDiagnosticsPanel
+          engine={captureEngine ?? null}
+          metrics={liveDiagnosticMetrics}
+          publishFeatures={publishFeatures}
+        />
+      ) : null}
     </div>
   );
 }

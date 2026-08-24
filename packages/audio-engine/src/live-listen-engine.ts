@@ -1,13 +1,8 @@
-import { audioFeatureFrameSchema, type AudioFeatureFrame, type AudioMode } from "@prism/contracts";
+import { type AudioFeatureFrame, type AudioMode } from "@prism/contracts";
 
 import { createAudioContext, isSecureAudioContext } from "./audio-context.js";
-import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE, FEATURE_INTERVAL_MS } from "./constants.js";
-import {
-  buildFeatureFrame,
-  createFeatureExtractorState,
-  silentFrame,
-  type FeatureExtractorState,
-} from "./feature-math.js";
+import { DEFAULT_BAND_COUNT, DEFAULT_FFT_SIZE } from "./constants.js";
+import { silentFrame } from "./feature-math.js";
 import {
   LIVE_LISTEN_AUDIO_CONSTRAINTS,
   canRequestMicrophone,
@@ -15,7 +10,7 @@ import {
   stopMediaStream,
   type LiveListenFailureStatus,
 } from "./media-permission.js";
-import { acquireResource } from "./runtime-resources.js";
+import { isLiveAudioTrack, MediaStreamAnalysisGraph } from "./media-stream-analysis.js";
 
 export const LIVE_LISTEN_SOUND_THRESHOLD = 0.035;
 
@@ -23,6 +18,7 @@ export type LiveListenEngineStatus =
   | "idle"
   | "requesting"
   | "listening"
+  | "waiting"
   | "paused"
   | "denied"
   | "unavailable"
@@ -55,38 +51,25 @@ export type LiveListenEngineListener = (event: {
 export class LiveListenEngine {
   readonly mode: AudioMode = "live_listen";
 
-  private readonly fftSize: number;
   private readonly bandCount: number;
   private readonly validateFrames: boolean;
   private readonly getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   private readonly createContext: () => AudioContext | null;
   private readonly isSecure: () => boolean;
-  private readonly raf: (callback: FrameRequestCallback) => number;
-  private readonly caf: (handle: number) => void;
   private readonly now: () => number;
   private readonly listeners = new Set<LiveListenEngineListener>();
+  private readonly graph: MediaStreamAnalysisGraph;
 
   private status: LiveListenEngineStatus = "idle";
   private errorMessage: string | undefined;
   private frame: AudioFeatureFrame;
-  private extractor: FeatureExtractorState;
-
-  private audioContext: AudioContext | null = null;
   private stream: MediaStream | null = null;
-  private sourceNode: MediaStreamAudioSourceNode | null = null;
-  private analyser: AnalyserNode | null = null;
-  private frequencyBuffer: Uint8Array<ArrayBuffer> | null = null;
-  private timeBuffer: Uint8Array<ArrayBuffer> | null = null;
-  private rafId: number | null = null;
-  private lastEmitMs = 0;
+  private audioContext: AudioContext | null = null;
+  private captureGeneration = 0;
   private disposed = false;
   private contextStateHandler: (() => void) | null = null;
-  private releaseContext: (() => void) | null = null;
-  private releaseSource: (() => void) | null = null;
-  private releaseLoop: (() => void) | null = null;
 
   constructor(options: LiveListenEngineOptions = {}) {
-    this.fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
     this.bandCount = options.bandCount ?? DEFAULT_BAND_COUNT;
     this.validateFrames = options.validateFrames ?? false;
     this.getUserMedia =
@@ -100,18 +83,17 @@ export class LiveListenEngine {
       });
     this.createContext = options.createContext ?? createAudioContext;
     this.isSecure = options.isSecureContext ?? isSecureAudioContext;
-    this.raf =
-      options.requestAnimationFrame ??
-      ((callback) => (typeof window !== "undefined" ? window.requestAnimationFrame(callback) : 0));
-    this.caf =
-      options.cancelAnimationFrame ??
-      ((handle) => {
-        if (typeof window !== "undefined") window.cancelAnimationFrame(handle);
-      });
     this.now =
       options.now ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
+    this.graph = new MediaStreamAnalysisGraph({
+      fftSize: options.fftSize ?? DEFAULT_FFT_SIZE,
+      bandCount: this.bandCount,
+      validateFrames: this.validateFrames,
+      requestAnimationFrame: options.requestAnimationFrame,
+      cancelAnimationFrame: options.cancelAnimationFrame,
+      now: this.now,
+    });
     this.frame = silentFrame(0, this.bandCount);
-    this.extractor = createFeatureExtractorState(this.bandCount);
   }
 
   getStatus(): LiveListenEngineStatus {
@@ -119,11 +101,15 @@ export class LiveListenEngine {
   }
 
   getFrame(): AudioFeatureFrame {
-    return this.frame;
+    return this.graph.getStream() ? this.graph.getFrame() : this.frame;
   }
 
   getErrorMessage(): string | undefined {
     return this.errorMessage;
+  }
+
+  getAnalysisGraph(): MediaStreamAnalysisGraph {
+    return this.graph;
   }
 
   subscribe(listener: LiveListenEngineListener): () => void {
@@ -136,9 +122,11 @@ export class LiveListenEngine {
 
   async start(): Promise<void> {
     if (this.disposed) return;
-    if (this.status === "listening" || this.status === "requesting") return;
+    if (this.status === "listening" || this.status === "waiting" || this.status === "requesting") {
+      return;
+    }
 
-    if (this.status === "paused" && this.analyser && this.stream) {
+    if (this.status === "paused" && this.graph.getStream()) {
       const context = this.audioContext;
       if (context?.state === "suspended") {
         try {
@@ -152,8 +140,9 @@ export class LiveListenEngine {
         this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
         return;
       }
-      this.setStatus("listening");
-      this.startLoop();
+      const gen = this.graph.getGeneration();
+      this.setStatus(this.frame.energy >= LIVE_LISTEN_SOUND_THRESHOLD ? "listening" : "waiting");
+      this.graph.startLoop(gen);
       return;
     }
 
@@ -163,10 +152,12 @@ export class LiveListenEngine {
       return;
     }
 
+    const oldGen = this.graph.getGeneration();
+    await this.disposeCapture(oldGen);
+    const gen = this.graph.beginGeneration();
+    this.captureGeneration = gen;
     this.setStatus("requesting");
 
-    // Invoke getUserMedia and AudioContext construction before any await so a
-    // click/tap user gesture is still valid (Safari/iOS especially).
     let streamPromise: Promise<MediaStream>;
     try {
       streamPromise = this.getUserMedia(LIVE_LISTEN_AUDIO_CONSTRAINTS);
@@ -180,13 +171,15 @@ export class LiveListenEngine {
     const resumePromise =
       nextContext?.state === "suspended" ? nextContext.resume() : Promise.resolve();
 
-    await this.tearDownGraph();
+    if (gen !== this.captureGeneration) return;
+
     this.audioContext = nextContext;
 
     try {
       await resumePromise;
     } catch {
       stopMediaStream(await streamPromise.catch(() => null));
+      if (gen !== this.captureGeneration) return;
       this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
       return;
     }
@@ -194,12 +187,13 @@ export class LiveListenEngine {
     try {
       this.stream = await streamPromise;
     } catch (error) {
+      if (gen !== this.captureGeneration) return;
       const failure = classifyGetUserMediaError(error);
       this.setFailure(failure.status, failure.message);
       return;
     }
 
-    if (this.disposed) {
+    if (this.disposed || gen !== this.captureGeneration) {
       stopMediaStream(this.stream);
       this.stream = null;
       return;
@@ -220,67 +214,48 @@ export class LiveListenEngine {
     }
 
     try {
-      this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = this.fftSize;
-      this.analyser.smoothingTimeConstant = 0.35;
-      // Intentionally not connected to destination — microphone must not play back.
-      this.sourceNode.connect(this.analyser);
-      this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
-      this.timeBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
-      this.releaseContext = acquireResource("audioContexts");
-      this.releaseSource = acquireResource("mediaSources");
-      this.bindContextState(this.audioContext);
+      await this.graph.connect(this.stream, this.audioContext, gen);
+      if (gen !== this.captureGeneration) {
+        stopMediaStream(this.stream);
+        this.stream = null;
+        return;
+      }
+      this.bindContextState(this.audioContext, gen);
+      this.graph.setFrameListener((frame) => this.handleAnalysisFrame(frame));
     } catch {
-      await this.tearDownGraph();
+      if (gen !== this.captureGeneration) return;
+      await this.disposeCapture(gen);
       this.setFailure("error", "Could not start microphone capture. Try again or use Demo Track.");
       return;
     }
 
-    this.setStatus("listening");
-    this.startLoop();
+    this.setStatus("waiting");
+    this.graph.startLoop(gen);
   }
 
   async pause(): Promise<void> {
-    if (this.status !== "listening") return;
-    this.stopLoop();
+    if (this.status !== "listening" && this.status !== "waiting") return;
+    this.graph.stopLoop();
     this.setStatus("paused");
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    await this.tearDownGraph();
+    const gen = this.captureGeneration;
+    await this.disposeCapture(gen);
     this.listeners.clear();
     this.status = "idle";
     this.errorMessage = undefined;
     this.frame = silentFrame(this.now(), this.bandCount);
   }
 
-  private async tearDownGraph(): Promise<void> {
-    this.stopLoop();
+  private async disposeCapture(generation: number): Promise<void> {
+    this.graph.setFrameListener(null);
     this.unbindContextState();
     stopMediaStream(this.stream);
     this.stream = null;
-
-    try {
-      this.sourceNode?.disconnect();
-    } catch {
-      // already disconnected
-    }
-    try {
-      this.analyser?.disconnect();
-    } catch {
-      // already disconnected
-    }
-    this.sourceNode = null;
-    this.analyser = null;
-    this.frequencyBuffer = null;
-    this.timeBuffer = null;
-    this.releaseSource?.();
-    this.releaseSource = null;
-    this.releaseContext?.();
-    this.releaseContext = null;
+    await this.graph.dispose(generation);
 
     if (this.audioContext) {
       try {
@@ -292,10 +267,11 @@ export class LiveListenEngine {
     }
   }
 
-  private bindContextState(context: AudioContext): void {
+  private bindContextState(context: AudioContext, generation: number): void {
     this.unbindContextState();
     const handler = () => {
-      if (this.disposed || this.status !== "listening") return;
+      if (this.disposed || generation !== this.captureGeneration) return;
+      if (this.status !== "listening" && this.status !== "waiting") return;
       const state = this.audioContext?.state as string | undefined;
       if (state === "suspended" || state === "interrupted") {
         this.setFailure("inactive", "Audio context is inactive. Tap Microphone again.");
@@ -316,48 +292,27 @@ export class LiveListenEngine {
     this.contextStateHandler = null;
   }
 
-  private startLoop(): void {
-    if (this.rafId !== null) return;
-    this.releaseLoop = acquireResource("animationLoops");
-    const tick = (now: number) => {
-      this.rafId = this.raf(tick);
-      if (!this.analyser || !this.frequencyBuffer || !this.timeBuffer || !this.audioContext) return;
-      if (now - this.lastEmitMs < FEATURE_INTERVAL_MS) return;
-      this.lastEmitMs = now;
-
-      this.analyser.getByteFrequencyData(this.frequencyBuffer);
-      this.analyser.getByteTimeDomainData(this.timeBuffer);
-
-      const result = buildFeatureFrame(this.extractor, {
-        timeDomain: this.timeBuffer,
-        frequencyData: this.frequencyBuffer,
-        sampleRate: this.audioContext.sampleRate,
-        fftSize: this.analyser.fftSize,
-        timestampMs: now,
-        bandCount: this.bandCount,
-      });
-      this.extractor = result.state;
-      this.frame = this.validateFrames ? audioFeatureFrameSchema.parse(result.frame) : result.frame;
-      this.emit();
-    };
-    this.rafId = this.raf(tick);
-  }
-
-  private stopLoop(): void {
-    if (this.rafId !== null) {
-      this.caf(this.rafId);
-      this.rafId = null;
+  private handleAnalysisFrame(frame: AudioFeatureFrame): void {
+    this.frame = frame;
+    if (this.status === "waiting" || this.status === "listening") {
+      const next =
+        frame.energy >= LIVE_LISTEN_SOUND_THRESHOLD && isLiveAudioTrack(this.stream)
+          ? "listening"
+          : "waiting";
+      if (next !== this.status) {
+        this.status = next;
+        this.errorMessage = undefined;
+      }
     }
-    this.releaseLoop?.();
-    this.releaseLoop = null;
+    this.emit();
   }
 
   private setStatus(status: LiveListenEngineStatus): void {
     this.status = status;
-    if (status === "listening") {
+    if (status === "listening" || status === "waiting") {
       this.errorMessage = undefined;
     }
-    if (status !== "listening") {
+    if (status !== "listening" && status !== "waiting") {
       this.frame = silentFrame(this.now(), this.bandCount);
     }
     this.emit();

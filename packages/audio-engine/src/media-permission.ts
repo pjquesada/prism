@@ -14,7 +14,7 @@ export const LIVE_LISTEN_AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: false,
     noiseSuppression: false,
-    autoGainControl: true,
+    autoGainControl: false,
     channelCount: 1,
   },
   video: false,

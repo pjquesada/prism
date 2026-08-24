@@ -3,10 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveListenEngine } from "./live-listen-engine.js";
 import { LIVE_LISTEN_AUDIO_CONSTRAINTS } from "./media-permission.js";
 
-type FakeTrack = { kind: string; stop: ReturnType<typeof vi.fn> };
+type FakeTrack = {
+  kind: string;
+  stop: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  removeEventListener: ReturnType<typeof vi.fn>;
+};
 
 function createFakeStream(): { stream: MediaStream; tracks: FakeTrack[] } {
-  const tracks: FakeTrack[] = [{ kind: "audio", stop: vi.fn() }];
+  const tracks: FakeTrack[] = [
+    {
+      kind: "audio",
+      stop: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    },
+  ];
   const stream = {
     getTracks: () => tracks,
     getAudioTracks: () => tracks,
@@ -15,6 +27,11 @@ function createFakeStream(): { stream: MediaStream; tracks: FakeTrack[] } {
 }
 
 function createFakeContext() {
+  const silentGain = {
+    gain: { value: 1 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
   const analyser = {
     fftSize: 2048,
     frequencyBinCount: 1024,
@@ -40,10 +57,12 @@ function createFakeContext() {
     close: vi.fn(async () => undefined),
     createMediaStreamSource: vi.fn(() => source),
     createAnalyser: vi.fn(() => analyser),
+    createGain: vi.fn(() => silentGain),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     source,
     analyser,
+    silentGain,
   };
 }
 
@@ -62,10 +81,12 @@ describe("LiveListenEngine", () => {
     });
 
     await engine.start();
-    expect(engine.getStatus()).toBe("listening");
+    expect(engine.getStatus()).toBe("waiting");
     expect(getUserMedia).toHaveBeenCalledWith(LIVE_LISTEN_AUDIO_CONSTRAINTS);
     expect(context.source.connect).toHaveBeenCalledWith(context.analyser);
-    expect(context.analyser.connect).not.toHaveBeenCalled();
+    expect(context.analyser.connect).toHaveBeenCalledWith(context.silentGain);
+    expect(context.silentGain.connect).toHaveBeenCalledWith(context.destination);
+    expect(context.silentGain.gain.value).toBe(0);
     expect(context.analyser.smoothingTimeConstant).toBe(0.35);
     expect(JSON.stringify(engine.getFrame())).not.toMatch(/pcm|microphone|MediaStream/);
 
@@ -137,7 +158,7 @@ describe("LiveListenEngine", () => {
     await engine.start();
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(context.resume).toHaveBeenCalled();
-    expect(engine.getStatus()).toBe("listening");
+    expect(engine.getStatus()).toBe("waiting");
     await engine.dispose();
     expect(tracks[0]?.stop).toHaveBeenCalled();
   });
@@ -199,7 +220,7 @@ describe("LiveListenEngine", () => {
     await engine.pause();
     expect(engine.getStatus()).toBe("paused");
     await engine.start();
-    expect(engine.getStatus()).toBe("listening");
+    expect(engine.getStatus()).toBe("waiting");
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     await engine.dispose();
   });
