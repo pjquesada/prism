@@ -43,6 +43,11 @@ function createFakeStream(kinds: Array<"audio" | "video"> = ["audio", "video"]):
 }
 
 function createFakeContext() {
+  const silentGain = {
+    gain: { value: 1 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
   const analyser = {
     fftSize: 2048,
     frequencyBinCount: 1024,
@@ -68,10 +73,12 @@ function createFakeContext() {
     close: vi.fn(async () => undefined),
     createMediaStreamSource: vi.fn(() => source),
     createAnalyser: vi.fn(() => analyser),
+    createGain: vi.fn(() => silentGain),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     source,
     analyser,
+    silentGain,
   };
 }
 
@@ -131,7 +138,9 @@ describe("BrowserCaptureEngine", () => {
     const constraints = getDisplayMedia.mock.calls[0]?.[0] as DisplayMediaStreamOptions;
     expect(constraints.audio).toBeTruthy();
     expect(context.source.connect).toHaveBeenCalledWith(context.analyser);
-    expect(context.analyser.connect).not.toHaveBeenCalled();
+    expect(context.analyser.connect).toHaveBeenCalledWith(context.silentGain);
+    expect(context.silentGain.connect).toHaveBeenCalledWith(context.destination);
+    expect(context.silentGain.gain.value).toBe(0);
     expect(tracks.find((t) => t.kind === "video")?.stop).toHaveBeenCalled();
     expect(JSON.stringify(engine.getFrame())).not.toMatch(/pcm|MediaStream|fft|video/);
     await engine.dispose();

@@ -60,9 +60,9 @@ export function ControllerSessionPanel() {
   const paramTimerRef = useRef<number | null>(null);
   const [captureEngine, setCaptureEngine] = useState<CaptureEngine | null>(null);
   const captureEngineRef = useRef<CaptureEngine | null>(null);
-  const [capturePreference, setCapturePreference] = useState<"browser_capture" | "microphone">(
-    "browser_capture",
-  );
+  const captureGenRef = useRef(0);
+  const [selectedCaptureInput, setSelectedCaptureInput] =
+    useState<CaptureInputOption>("demo_track");
 
   const restore = useCallback(() => {
     if (!sessionId) return;
@@ -102,11 +102,15 @@ export function ControllerSessionPanel() {
 
   const remoteAudioMode = sync.snapshot?.playback.audioMode ?? "demo_track";
   const captureInput: CaptureInputOption =
-    remoteAudioMode === "demo_track"
+    remoteAudioMode === "demo_track" && selectedCaptureInput === "demo_track"
       ? "demo_track"
-      : capturePreference === "microphone"
+      : selectedCaptureInput === "microphone"
         ? "microphone"
-        : "browser_capture";
+        : selectedCaptureInput === "browser_capture"
+          ? "browser_capture"
+          : remoteAudioMode === "live_listen"
+            ? "browser_capture"
+            : "demo_track";
 
   const retry = () => {
     attemptedSessionRef.current = null;
@@ -290,31 +294,48 @@ export function ControllerSessionPanel() {
   );
 
   const stopCapture = useCallback(() => {
+    const gen = ++captureGenRef.current;
     const engine = captureEngineRef.current;
     captureEngineRef.current = null;
     setCaptureEngine(null);
     if (engine) {
+      const dispose = () => {
+        if (gen !== captureGenRef.current) return;
+        setCaptureEngine((current) => (current === engine ? null : current));
+      };
       if ("stop" in engine && typeof engine.stop === "function") {
-        void engine.stop().then(() => engine.dispose());
+        void engine
+          .stop()
+          .then(() => engine.dispose())
+          .finally(dispose);
       } else {
-        void engine.dispose();
+        void engine.dispose().finally(dispose);
       }
     }
   }, []);
 
-  const startCaptureFromGesture = useCallback(
-    (option: CaptureInputOption) => {
-      stopCapture();
-      if (option === "demo_track") return null;
-      const engine: CaptureEngine =
-        option === "microphone" ? new LiveListenEngine() : new BrowserCaptureEngine();
-      captureEngineRef.current = engine;
-      setCaptureEngine(engine);
-      void engine.start();
-      return engine;
-    },
-    [stopCapture],
-  );
+  const startCaptureFromGesture = useCallback((option: CaptureInputOption) => {
+    if (option === "demo_track") return null;
+    const gen = ++captureGenRef.current;
+    const previous = captureEngineRef.current;
+    captureEngineRef.current = null;
+    setCaptureEngine(null);
+    if (previous) {
+      void ("stop" in previous && typeof previous.stop === "function"
+        ? previous.stop().then(() => previous.dispose())
+        : previous.dispose());
+    }
+    const engine: CaptureEngine =
+      option === "microphone" ? new LiveListenEngine() : new BrowserCaptureEngine();
+    captureEngineRef.current = engine;
+    setCaptureEngine(engine);
+    void engine.start().finally(() => {
+      if (gen !== captureGenRef.current || captureEngineRef.current !== engine) {
+        void engine.dispose();
+      }
+    });
+    return engine;
+  }, []);
 
   const publishCaptureInput = useCallback(
     (option: CaptureInputOption) => {
@@ -323,9 +344,7 @@ export function ControllerSessionPanel() {
       if (sync.localRole !== "controller" && sync.localRole !== "combined") return;
 
       writeCaptureInputPreference(option);
-      if (option === "microphone" || option === "browser_capture") {
-        setCapturePreference(option);
-      }
+      setSelectedCaptureInput(option);
       const audioMode = audioModeFromCaptureOption(option);
       const live = audioMode === "live_listen";
       if (live) {

@@ -63,7 +63,7 @@ describe("LIVE_LISTEN_AUDIO_CONSTRAINTS", () => {
       expect.objectContaining({
         echoCancellation: false,
         noiseSuppression: false,
-        autoGainControl: true,
+        autoGainControl: false,
       }),
     );
   });

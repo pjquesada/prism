@@ -67,6 +67,23 @@ export {
   type DisplayMediaSupport,
 } from "./display-media.js";
 export {
+  describeAudioTrack,
+  derivePipelineStageDiagnostics,
+  isLiveAudioTrack,
+  MediaStreamAnalysisGraph,
+  runMediaStreamInputSelfTest,
+  SILENT_OUTPUT_GAIN,
+  type AnalysisLoopDiagnostics,
+  type InputPipelineStageDiagnostics,
+  type InputPipelineStageStatus,
+  type InputSelfTestResult,
+  type InputSelfTestStageResult,
+  type MediaStreamAnalysisDiagnostics,
+  type MediaStreamAnalysisGraphOptions,
+  type MediaStreamAnalysisSample,
+  type MediaStreamTrackDiagnostics,
+} from "./media-stream-analysis.js";
+export {
   applyEnvelope,
   buildFeatureFrame,
   clamp01,
