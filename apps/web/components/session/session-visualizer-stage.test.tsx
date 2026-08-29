@@ -308,6 +308,7 @@ describe("SessionVisualizerStage audio ownership", () => {
     });
     expect(publishFeatures).toHaveBeenCalled();
     const envelope = publishFeatures.mock.calls[0]?.[0] as AudioFeatureEnvelope;
+    expect(envelope.frameSeq).toBeGreaterThan(1_000_000_000_000);
     expect(envelope.levels).toHaveLength(8);
     expect(envelope).not.toHaveProperty("bands");
     expect(JSON.stringify(envelope)).not.toMatch(
