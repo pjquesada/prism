@@ -97,6 +97,29 @@ function createFakeContext() {
 }
 
 describe("MediaStreamAnalysisGraph", () => {
+  it("uses a capture clock independent of page rendering in production", async () => {
+    const context = createFakeContext();
+    let intervalCallback: (() => void) | null = null;
+    const clearInterval = vi.fn();
+    const graph = new MediaStreamAnalysisGraph({
+      setInterval: (callback) => {
+        intervalCallback = callback;
+        return 7;
+      },
+      clearInterval,
+      now: () => 80,
+    });
+    const gen = graph.beginGeneration();
+    await graph.connect(createFakeStream(), context as unknown as AudioContext, gen);
+    graph.startLoop(gen);
+    context.analyser.getByteFrequencyData = (buffer: Uint8Array) => buffer.fill(210);
+    context.analyser.getByteTimeDomainData = (buffer: Uint8Array) => buffer.fill(255);
+    intervalCallback?.();
+    expect(graph.getFrame().energy).toBeGreaterThan(0);
+    await graph.dispose(gen);
+    expect(clearInterval).toHaveBeenCalledWith(7);
+  });
+
   it("routes source through analyser and zero-gain tap to destination", async () => {
     const context = createFakeContext();
     const graph = new MediaStreamAnalysisGraph();
