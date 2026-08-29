@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AUDIO_FEATURE_ENVELOPE_INTERVAL_MS,
   audioFeatureFrameToEnvelope,
@@ -117,8 +117,6 @@ export function SessionVisualizerStage({
   const lastHasSoundRef = useRef(false);
   const remoteEnergyElRef = useRef<HTMLSpanElement | null>(null);
   const meterFillRef = useRef<HTMLDivElement | null>(null);
-  const publishFeaturesRef = useRef(publishFeatures);
-  const canOwnAudioRef = useRef(canOwnAudio);
   const publishCountRef = useRef(0);
   const publishWindowStartRef = useRef(0);
   const [diagnosticMetrics, setDiagnosticMetrics] = useState<InputDiagnosticsMetrics>({
@@ -133,26 +131,31 @@ export function SessionVisualizerStage({
     // maybePublishRef uses Date.now(); keep diagnostics on the same clock.
     publishWindowStartRef.current = Date.now();
   }, []);
-  const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
-    const publish = publishFeaturesRef.current;
-    if (!canOwnAudioRef.current || !publish) return;
-    const now = Date.now();
-    if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
-    lastPublishMsRef.current = now;
-    frameSeqRef.current += 1;
-    publish(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
-    publishCountRef.current += 1;
-    const windowStart = publishWindowStartRef.current || now;
-    const elapsed = Math.max(1, now - windowStart);
-    if (elapsed >= 1000) {
-      setDiagnosticMetrics((current) => ({
-        ...current,
-        envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
-      }));
-      publishCountRef.current = 0;
-      publishWindowStartRef.current = now;
-    }
-  });
+  const publishFrame = useCallback(
+    (frame: AudioFeatureFrame) => {
+      // This callback is only installed on an engine owned by the active
+      // controller/combined device. Avoid a second ref-based authority gate that
+      // can remain stale while capture is already running.
+      if (!canOwnAudio || !publishFeatures) return;
+      const now = Date.now();
+      if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
+      lastPublishMsRef.current = now;
+      frameSeqRef.current += 1;
+      publishFeatures(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
+      publishCountRef.current += 1;
+      const windowStart = publishWindowStartRef.current || now;
+      const elapsed = Math.max(1, now - windowStart);
+      if (elapsed >= 1000) {
+        setDiagnosticMetrics((current) => ({
+          ...current,
+          envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
+        }));
+        publishCountRef.current = 0;
+        publishWindowStartRef.current = now;
+      }
+    },
+    [canOwnAudio, publishFeatures],
+  );
 
   const [engineReady, setEngineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,11 +164,6 @@ export function SessionVisualizerStage({
   const [captureError, setCaptureError] = useState<string | undefined>();
   const [hasSound, setHasSound] = useState(false);
   const [inputLevel, setInputLevel] = useState(0);
-
-  useEffect(() => {
-    publishFeaturesRef.current = publishFeatures;
-    canOwnAudioRef.current = canOwnAudio;
-  }, [publishFeatures, canOwnAudio]);
 
   const liveDiagnosticMetrics = useMemo<InputDiagnosticsMetrics>(
     () => ({
@@ -222,7 +220,7 @@ export function SessionVisualizerStage({
         if (event.status === "unsupported") setError("Web Audio unsupported");
       }
       if (event.status === "playing") {
-        maybePublishRef.current(event.frame);
+        publishFrame(event.frame);
       }
     });
     void engine.prepare();
@@ -231,7 +229,7 @@ export function SessionVisualizerStage({
       void engine.dispose();
       engineRef.current = null;
     };
-  }, [captureMode, sessionId, canOwnAudio]);
+  }, [captureMode, sessionId, canOwnAudio, publishFrame]);
 
   useEffect(() => {
     if (!sessionId || !captureMode || !canOwnAudio || !captureEngine) return;
@@ -264,13 +262,13 @@ export function SessionVisualizerStage({
         );
       }
       if (event.status === "listening" || event.status === "waiting") {
-        maybePublishRef.current(event.frame);
+        publishFrame(event.frame);
       }
     });
     return () => {
       unsubscribe();
     };
-  }, [captureMode, canOwnAudio, sessionId, captureEngine, soundThreshold]);
+  }, [captureMode, canOwnAudio, sessionId, captureEngine, soundThreshold, publishFrame]);
 
   useEffect(() => {
     const interpolator = interpolatorRef.current;

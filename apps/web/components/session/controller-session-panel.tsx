@@ -9,6 +9,7 @@ import {
   mergeActivePresetSnapshot,
   parseVisualizerParams,
   type ActivePresetSnapshot,
+  type AudioFeatureEnvelope,
   type DisplayMode,
   type PlaybackState,
   type PresetConfig,
@@ -291,6 +292,13 @@ export function ControllerSessionPanel() {
       });
     },
     [client, sessionId, sync.localDeviceId],
+  );
+
+  const publishFeatureEnvelope = useCallback(
+    (envelope: AudioFeatureEnvelope) => {
+      client.publishFeatures(envelope);
+    },
+    [client],
   );
 
   const stopCapture = useCallback(() => {
@@ -643,7 +651,7 @@ export function ControllerSessionPanel() {
         captureEngine={captureEngine}
         captureSource={captureInput}
         subscribeFeatures={(listener) => client.subscribeFeatures(listener)}
-        publishFeatures={(envelope) => client.publishFeatures(envelope)}
+        publishFeatures={publishFeatureEnvelope}
         onStartCapture={() => {
           startCaptureFromGesture(captureInput === "demo_track" ? "browser_capture" : captureInput);
         }}
