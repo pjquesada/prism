@@ -43,6 +43,11 @@ export type SessionAdminClient = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from: (relation: string) => any;
   channel?: (name: string) => {
+    /** Explicit Supabase Realtime REST broadcast; safe for serverless requests. */
+    httpSend?: (
+      event: string,
+      payload: SessionMessage,
+    ) => Promise<{ error?: { message?: string } | null }>;
     send: (message: {
       type: "broadcast";
       event: string;
@@ -339,16 +344,32 @@ async function fanoutRealtimeMessage(
   sessionId: string,
   message: SessionMessage,
 ): Promise<void> {
-  if (typeof client.channel !== "function") return;
+  if (typeof client.channel !== "function") {
+    throw new SessionServiceError(
+      "session_backend_unavailable",
+      "Realtime broadcast is unavailable.",
+      503,
+    );
+  }
   try {
     const channel = client.channel(`session:${sessionId}`);
-    await channel.send({
-      type: "broadcast",
-      event: "session-message",
-      payload: message,
-    });
+    // A fresh serverless channel is not subscribed, so channel.send() may
+    // return an error instead of reaching browser subscribers. Supabase's
+    // documented httpSend path publishes through the Realtime REST endpoint.
+    const result = channel.httpSend
+      ? await channel.httpSend("session-message", message)
+      : await channel.send({
+          type: "broadcast",
+          event: "session-message",
+          payload: message,
+        });
+    if (result.error) throw new Error(result.error.message ?? "realtime_broadcast_failed");
   } catch {
-    // Fan-out is best-effort; snapshot polling remains the durable fallback.
+    throw new SessionServiceError(
+      "session_backend_unavailable",
+      "Realtime broadcast failed.",
+      503,
+    );
   }
 }
 
