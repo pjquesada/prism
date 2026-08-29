@@ -109,7 +109,7 @@ export function SessionVisualizerStage({
   // The server rejects feature sequences lower than the last one seen for the
   // session. Seed from wall-clock time so a controller reload/reconnect cannot
   // restart at 1 and have every otherwise-valid envelope rejected.
-  const frameSeqRef = useRef(Date.now() * 1000);
+  const frameSeqRef = useRef(0);
   const lastPublishMsRef = useRef(0);
   const lastAnchorRef = useRef(0);
   const lastDemoStatusRef = useRef<string>("idle");
@@ -129,6 +129,7 @@ export function SessionVisualizerStage({
   });
 
   useEffect(() => {
+    frameSeqRef.current = Date.now() * 1000;
     // maybePublishRef uses Date.now(); keep diagnostics on the same clock.
     publishWindowStartRef.current = Date.now();
   }, []);
