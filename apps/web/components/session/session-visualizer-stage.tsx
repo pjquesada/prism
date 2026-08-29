@@ -131,28 +131,31 @@ export function SessionVisualizerStage({
     // maybePublishRef uses Date.now(); keep diagnostics on the same clock.
     publishWindowStartRef.current = Date.now();
   }, []);
-  const publishFrame = useCallback((frame: AudioFeatureFrame) => {
-    // This callback is only installed on an engine owned by the active
-    // controller/combined device. Avoid a second ref-based authority gate that
-    // can remain stale while capture is already running.
-    if (!canOwnAudio || !publishFeatures) return;
-    const now = Date.now();
-    if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
-    lastPublishMsRef.current = now;
-    frameSeqRef.current += 1;
-    publishFeatures(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
-    publishCountRef.current += 1;
-    const windowStart = publishWindowStartRef.current || now;
-    const elapsed = Math.max(1, now - windowStart);
-    if (elapsed >= 1000) {
-      setDiagnosticMetrics((current) => ({
-        ...current,
-        envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
-      }));
-      publishCountRef.current = 0;
-      publishWindowStartRef.current = now;
-    }
-  }, [canOwnAudio, publishFeatures]);
+  const publishFrame = useCallback(
+    (frame: AudioFeatureFrame) => {
+      // This callback is only installed on an engine owned by the active
+      // controller/combined device. Avoid a second ref-based authority gate that
+      // can remain stale while capture is already running.
+      if (!canOwnAudio || !publishFeatures) return;
+      const now = Date.now();
+      if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
+      lastPublishMsRef.current = now;
+      frameSeqRef.current += 1;
+      publishFeatures(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
+      publishCountRef.current += 1;
+      const windowStart = publishWindowStartRef.current || now;
+      const elapsed = Math.max(1, now - windowStart);
+      if (elapsed >= 1000) {
+        setDiagnosticMetrics((current) => ({
+          ...current,
+          envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
+        }));
+        publishCountRef.current = 0;
+        publishWindowStartRef.current = now;
+      }
+    },
+    [canOwnAudio, publishFeatures],
+  );
 
   const [engineReady, setEngineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
