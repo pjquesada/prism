@@ -145,6 +145,7 @@ describe("BrowserCaptureEngine", () => {
     expect(JSON.stringify(engine.getFrame())).not.toMatch(/pcm|MediaStream|fft|video/);
     await engine.dispose();
     expect(tracks.find((t) => t.kind === "audio")?.stop).toHaveBeenCalled();
+    expect(tracks.find((t) => t.kind === "video")?.stop).toHaveBeenCalled();
   });
 
   it("rejects a shared stream with no audio track", async () => {
