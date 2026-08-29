@@ -6,7 +6,6 @@ import {
   buildBrowserCaptureConstraints,
   canRequestBrowserCapture,
   classifyGetDisplayMediaError,
-  discardCapturedVideoTracks,
   NO_AUDIO_SHARED_MESSAGE,
   stopDisplayMediaStream,
   streamHasAudioTrack,
@@ -217,7 +216,9 @@ export class BrowserCaptureEngine {
       return;
     }
 
-    discardCapturedVideoTracks(stream);
+    // Keep the browser-required display video track alive for the lifetime of
+    // capture. Prism never reads or renders it; stopping it here can terminate
+    // the coupled tab-capture session (including audio) in Chromium/Edge.
 
     if (!streamHasAudioTrack(stream)) {
       stopDisplayMediaStream(stream);
