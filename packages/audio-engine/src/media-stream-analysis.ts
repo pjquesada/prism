@@ -47,6 +47,8 @@ export type MediaStreamAnalysisGraphOptions = {
   validateFrames?: boolean;
   requestAnimationFrame?: (callback: FrameRequestCallback) => number;
   cancelAnimationFrame?: (handle: number) => void;
+  setInterval?: (callback: () => void, delayMs: number) => number;
+  clearInterval?: (handle: number) => void;
   now?: () => number;
 };
 
@@ -154,6 +156,9 @@ export class MediaStreamAnalysisGraph {
   private readonly validateFrames: boolean;
   private readonly raf: (callback: FrameRequestCallback) => number;
   private readonly caf: (handle: number) => void;
+  private readonly interval: ((callback: () => void, delayMs: number) => number) | null;
+  private readonly clearIntervalFn: ((handle: number) => void) | null;
+  private readonly useAnimationFrameScheduler: boolean;
   private readonly now: () => number;
 
   private generation = 0;
@@ -167,6 +172,7 @@ export class MediaStreamAnalysisGraph {
   private extractor: FeatureExtractorState;
   private frame: AudioFeatureFrame;
   private rafId: number | null = null;
+  private intervalId: number | null = null;
   private lastEmitMs = 0;
   private releaseContext: (() => void) | null = null;
   private releaseSource: (() => void) | null = null;
@@ -185,8 +191,20 @@ export class MediaStreamAnalysisGraph {
     this.bandCount = options.bandCount ?? DEFAULT_BAND_COUNT;
     this.smoothingTimeConstant = options.smoothingTimeConstant ?? 0.35;
     this.validateFrames = options.validateFrames ?? false;
+    // rAF is intentionally only used when injected by deterministic tests.
+    // Real capture must continue while the controller tab is not painting (for
+    // example, while the user is interacting with a captured YouTube tab).
+    this.useAnimationFrameScheduler = options.requestAnimationFrame !== undefined;
     this.raf = options.requestAnimationFrame ?? defaultRaf;
     this.caf = options.cancelAnimationFrame ?? defaultCaf;
+    this.interval =
+      options.setInterval ??
+      (typeof window !== "undefined"
+        ? (callback, delayMs) => window.setInterval(callback, delayMs)
+        : null);
+    this.clearIntervalFn =
+      options.clearInterval ??
+      (typeof window !== "undefined" ? (handle) => window.clearInterval(handle) : null);
     this.now = options.now ?? defaultNow;
     this.extractor = createFeatureExtractorState(this.bandCount);
     this.frame = buildFeatureFrame(this.extractor, {
@@ -275,15 +293,14 @@ export class MediaStreamAnalysisGraph {
 
   startLoop(generation: number): void {
     if (generation !== this.generation) return;
-    if (this.rafId !== null) return;
+    if (this.rafId !== null || this.intervalId !== null) return;
     this.loopActive = true;
     this.loopStartedAtMs = this.now();
     this.sampleTicks = 0;
     this.frameTicks = 0;
     this.releaseLoop = acquireResource("animationLoops");
-    const tick = (now: number) => {
+    const sample = (now: number) => {
       if (generation !== this.generation) return;
-      this.rafId = this.raf(tick);
       if (!this.analyser || !this.frequencyBuffer || !this.timeBuffer || !this.audioContext) return;
       this.sampleTicks += 1;
       if (now - this.lastEmitMs < FEATURE_INTERVAL_MS) return;
@@ -306,7 +323,16 @@ export class MediaStreamAnalysisGraph {
       this.peakRms = Math.max(this.peakRms, this.frame.rms);
       this.frameListener?.(this.frame);
     };
-    this.rafId = this.raf(tick);
+    if (this.useAnimationFrameScheduler) {
+      const tick = (now: number) => {
+        if (generation !== this.generation) return;
+        this.rafId = this.raf(tick);
+        sample(now);
+      };
+      this.rafId = this.raf(tick);
+    } else if (this.interval) {
+      this.intervalId = this.interval(() => sample(this.now()), FEATURE_INTERVAL_MS);
+    }
   }
 
   stopLoop(): void {
@@ -314,6 +340,10 @@ export class MediaStreamAnalysisGraph {
     if (this.rafId !== null) {
       this.caf(this.rafId);
       this.rafId = null;
+    }
+    if (this.intervalId !== null) {
+      this.clearIntervalFn?.(this.intervalId);
+      this.intervalId = null;
     }
     this.releaseLoop?.();
     this.releaseLoop = null;

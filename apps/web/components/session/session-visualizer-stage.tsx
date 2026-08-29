@@ -106,6 +106,9 @@ export function SessionVisualizerStage({
   const engineRef = useRef<DemoTrackEngine | null>(null);
   const featuresRef = useRef<AudioFeatureFrame>(createSilentFeatureFrame());
   const interpolatorRef = useRef(new RemoteFeatureInterpolator());
+  // The server rejects feature sequences lower than the last one seen for the
+  // session. Seed from wall-clock time so a controller reload/reconnect cannot
+  // restart at 1 and have every otherwise-valid envelope rejected.
   const frameSeqRef = useRef(0);
   const lastPublishMsRef = useRef(0);
   const lastAnchorRef = useRef(0);
@@ -126,7 +129,9 @@ export function SessionVisualizerStage({
   });
 
   useEffect(() => {
-    publishWindowStartRef.current = performance.now();
+    frameSeqRef.current = Date.now() * 1000;
+    // maybePublishRef uses Date.now(); keep diagnostics on the same clock.
+    publishWindowStartRef.current = Date.now();
   }, []);
   const maybePublishRef = useRef((frame: AudioFeatureFrame) => {
     const publish = publishFeaturesRef.current;
