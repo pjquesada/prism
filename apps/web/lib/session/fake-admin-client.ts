@@ -264,6 +264,10 @@ export function createFakeAdminClient(db: FakeSessionDatabase) {
     },
     channel(name: string) {
       return {
+        httpSend: async (event: string, payload: unknown) => {
+          broadcasts.push({ channel: name, type: "broadcast", event, payload });
+          return { error: null };
+        },
         send: async (message: { type: string; event: string; payload: unknown }) => {
           broadcasts.push({ channel: name, ...message });
           return { error: null };

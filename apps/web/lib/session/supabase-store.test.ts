@@ -208,6 +208,11 @@ describe("durable supabase session store", () => {
     expect(db.playback_state).toHaveLength(playbackRows);
     expect(db.active_preset_snapshots).toHaveLength(presetRows);
     expect(client.__broadcasts.length).toBeGreaterThan(0);
+    expect(client.__broadcasts.at(-1)).toMatchObject({
+      channel: `session:${created.snapshot.session.id}`,
+      type: "broadcast",
+      event: "session-message",
+    });
   });
 
   it("rejects stale Live Listen envelopes without writing tables", async () => {
