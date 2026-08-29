@@ -44,7 +44,10 @@ export type SessionAdminClient = {
   from: (relation: string) => any;
   channel?: (name: string) => {
     /** Explicit Supabase Realtime REST broadcast; safe for serverless requests. */
-    httpSend?: (event: string, payload: SessionMessage) => Promise<{
+    httpSend?: (
+      event: string,
+      payload: SessionMessage,
+    ) => Promise<{
       error?: { message?: string } | null;
     }>;
     send: (message: {
@@ -364,11 +367,7 @@ async function fanoutRealtimeMessage(
         });
     if (result.error) throw new Error(result.error.message ?? "realtime_broadcast_failed");
   } catch {
-    throw new SessionServiceError(
-      "session_backend_unavailable",
-      "Realtime broadcast failed.",
-      503,
-    );
+    throw new SessionServiceError("session_backend_unavailable", "Realtime broadcast failed.", 503);
   }
 }
 
