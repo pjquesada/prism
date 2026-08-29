@@ -44,10 +44,9 @@ export type SessionAdminClient = {
   from: (relation: string) => any;
   channel?: (name: string) => {
     /** Explicit Supabase Realtime REST broadcast; safe for serverless requests. */
-    httpSend?: (
-      event: string,
-      payload: SessionMessage,
-    ) => Promise<{ error?: { message?: string } | null }>;
+    httpSend?: (event: string, payload: SessionMessage) => Promise<{
+      error?: { message?: string } | null;
+    }>;
     send: (message: {
       type: "broadcast";
       event: string;
