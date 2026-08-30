@@ -10,6 +10,7 @@ import {
   getSnapshotForCredentialDurable,
   joinWithPairingCodeDurable,
   publishAuthorizedMessageDurable,
+  publishSessionFeaturesDurable,
   rotatePairingCodeDurable,
 } from "./supabase-store";
 import {
@@ -177,72 +178,82 @@ describe("durable supabase session store", () => {
     ).rejects.toMatchObject({ code: "schema_mismatch" });
   });
 
-  it("fans out compact feature envelopes without writing session tables", async () => {
+  it("stores compact feature envelopes durably and broadcasts", async () => {
     const db = createFakeSessionDatabase();
     const client = createFakeAdminClient(db);
     const created = await createGuestSessionDurable(client, { role: "controller" });
     const playbackRows = db.playback_state.length;
     const presetRows = db.active_preset_snapshots.length;
-    const stamped = await publishAuthorizedMessageDurable(client, created.credential.token, {
-      type: "audio.features",
-      seq: 0,
-      sentAt: new Date().toISOString(),
-      sessionId: created.snapshot.session.id,
-      deviceId: created.credential.deviceId,
-      payload: {
-        frameSeq: 4,
-        timestampMs: Date.now(),
-        rms: 0.2,
-        energy: 0.3,
-        bass: 0.1,
-        mid: 0.1,
-        high: 0.1,
-        levels: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
-        onset: false,
-        beatStrength: 0,
-        centroid: 0.2,
-      },
+    const result = await publishSessionFeaturesDurable(client, created.credential.token, {
+      frameSeq: 4,
+      timestampMs: Date.now(),
+      rms: 0.2,
+      energy: 0.3,
+      bass: 0.1,
+      mid: 0.1,
+      high: 0.1,
+      levels: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+      onset: false,
+      beatStrength: 0,
+      centroid: 0.2,
     });
-    expect(stamped.type).toBe("audio.features");
-    expect(JSON.stringify(stamped)).not.toMatch(/"bands"|pcm|fft|microphone/);
+    expect(result.accepted).toBe(true);
+    expect(result.durableFallback).toBe("stored");
+    expect(JSON.stringify(result)).not.toMatch(/"bands"|pcm|fft|microphone/);
     expect(db.playback_state).toHaveLength(playbackRows);
     expect(db.active_preset_snapshots).toHaveLength(presetRows);
+    expect(db.session_feature_frames).toHaveLength(1);
     expect(client.__broadcasts.length).toBeGreaterThan(0);
-    expect(client.__broadcasts.at(-1)).toMatchObject({
-      channel: `session:${created.snapshot.session.id}`,
-      type: "broadcast",
-      event: "session-message",
+  });
+
+  it("keeps durable latest frame when realtime broadcast fails", async () => {
+    const db = createFakeSessionDatabase();
+    const client = {
+      ...createFakeAdminClient(db),
+      channel: () => ({
+        httpSend: async () => ({ error: { message: "broadcast_failed" } }),
+        send: async () => ({ error: { message: "broadcast_failed" } }),
+      }),
+    };
+    const created = await createGuestSessionDurable(client, { role: "controller" });
+    const result = await publishSessionFeaturesDurable(client, created.credential.token, {
+      frameSeq: 11,
+      timestampMs: Date.now(),
+      rms: 0.2,
+      energy: 0.3,
+      bass: 0.1,
+      mid: 0.1,
+      high: 0.1,
+      levels: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+      onset: false,
+      beatStrength: 0,
+      centroid: 0.2,
     });
+    expect(result.accepted).toBe(true);
+    expect(result.realtimeBroadcast).toBe("failed");
+    expect(db.session_feature_frames[0]?.frame_seq).toBe(11);
   });
 
   it("rejects stale Live Listen envelopes without writing tables", async () => {
     const db = createFakeSessionDatabase();
     const client = createFakeAdminClient(db);
     const created = await createGuestSessionDurable(client, { role: "controller" });
-    const playbackRows = db.playback_state.length;
     await expect(
-      publishAuthorizedMessageDurable(client, created.credential.token, {
-        type: "audio.features",
-        seq: 0,
-        sentAt: new Date().toISOString(),
-        sessionId: created.snapshot.session.id,
-        deviceId: created.credential.deviceId,
-        payload: {
-          frameSeq: 8,
-          timestampMs: Date.now() - 5_000,
-          rms: 0,
-          energy: 0,
-          bass: 0,
-          mid: 0,
-          high: 0,
-          levels: [0, 0, 0, 0, 0, 0, 0, 0],
-          onset: false,
-          beatStrength: 0,
-          centroid: 0,
-        },
+      publishSessionFeaturesDurable(client, created.credential.token, {
+        frameSeq: 8,
+        timestampMs: Date.now() - 5_000,
+        rms: 0,
+        energy: 0,
+        bass: 0,
+        mid: 0,
+        high: 0,
+        levels: [0, 0, 0, 0, 0, 0, 0, 0],
+        onset: false,
+        beatStrength: 0,
+        centroid: 0,
       }),
     ).rejects.toMatchObject({ code: "invalid_request" });
-    expect(db.playback_state).toHaveLength(playbackRows);
+    expect(db.session_feature_frames).toHaveLength(0);
   });
 
   it("returns constraint_violation for an invalid pairing HMAC digest", async () => {

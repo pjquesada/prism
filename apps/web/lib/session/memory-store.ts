@@ -1,8 +1,6 @@
 import { randomBytes } from "node:crypto";
 
 import {
-  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
-  AUDIO_FEATURE_ENVELOPE_STALE_MS,
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
@@ -12,12 +10,24 @@ import {
   sessionSnapshotSchema,
   type DeviceRole,
   type DisplayMode,
+  type AudioFeatureEnvelope,
+  type FeaturePublishResponse,
+  type FeatureReceiptBody,
+  type FeatureReceiptResponse,
   type GuestCredential,
   type PublicGuestIdentity,
   type SessionMessage,
   type SessionSnapshot,
 } from "@prism/contracts";
-import { assertPayloadSize, generatePairingCode } from "@prism/sync-engine";
+import { generatePairingCode } from "@prism/sync-engine";
+
+import {
+  buildFeatureBroadcastMessage,
+  logFeatureTransportEvent,
+  validateEnvelope,
+  type StoredFeatureFrame,
+  type StoredFeatureReceipt,
+} from "@/lib/session/feature-transport";
 
 import { getSessionSigningSecret } from "@/lib/session/config";
 import {
@@ -51,6 +61,8 @@ type StoredSession = {
   credentials: Map<string, StoredCredential>;
   seq: number;
   lastFeatureFrameSeq: number;
+  latestFeatureFrame: StoredFeatureFrame | null;
+  displayReceipt: StoredFeatureReceipt | null;
   listeners: Set<(message: SessionMessage) => void>;
 };
 
@@ -220,6 +232,8 @@ export function createGuestSession(input: {
     credentials: new Map([[hostDeviceId, credential]]),
     seq: 1,
     lastFeatureFrameSeq: -1,
+    latestFeatureFrame: null,
+    displayReceipt: null,
     listeners: new Set(),
   };
   getStore().sessions.set(sessionId, stored);
@@ -479,7 +493,6 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
     "session.patch",
     "handoff.request",
     "handoff.accept",
-    "audio.features",
   ]);
   if (controllerOnly.has(message.type) && cred.role === "display") {
     throw new SessionServiceError("unauthorized", "Displays cannot publish control events.", 401);
@@ -488,22 +501,11 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
   const now = nowIso();
 
   if (message.type === "audio.features") {
-    const age = Date.now() - message.payload.timestampMs;
-    if (age > AUDIO_FEATURE_ENVELOPE_STALE_MS || age < -5_000) {
-      throw new SessionServiceError("invalid_request", "Stale feature envelope.", 400);
-    }
-    if (message.payload.frameSeq <= session.lastFeatureFrameSeq) {
-      throw new SessionServiceError("invalid_request", "Out-of-order feature envelope.", 400);
-    }
-    assertPayloadSize(message.payload, AUDIO_FEATURE_ENVELOPE_MAX_BYTES);
-    session.lastFeatureFrameSeq = message.payload.frameSeq;
-    const stampedFeatures: SessionMessage = {
-      ...message,
-      seq: session.seq,
-      sentAt: now,
-    };
-    publish(session, stampedFeatures);
-    return stampedFeatures;
+    throw new SessionServiceError(
+      "invalid_request",
+      "Use the /features endpoint for audio feature publication.",
+      400,
+    );
   }
 
   const seq = nextSeq(session);
@@ -573,6 +575,131 @@ export function publishAuthorizedMessage(token: string, message: SessionMessage)
 
   publish(session, stamped);
   return stamped;
+}
+
+async function broadcastFeatureFrame(
+  session: StoredSession,
+  message: SessionMessage,
+): Promise<"sent" | "failed"> {
+  try {
+    publish(session, message);
+    return "sent";
+  } catch {
+    return "failed";
+  }
+}
+
+export async function publishSessionFeaturesMemory(
+  token: string,
+  envelope: AudioFeatureEnvelope,
+): Promise<FeaturePublishResponse> {
+  const cred = authorizeCredential(token);
+  if (cred.role !== "controller" && cred.role !== "combined") {
+    logFeatureTransportEvent({
+      operation: "publishSessionFeatures",
+      sessionId: cred.sessionId,
+      category: "authorization",
+      code: "display_publish_forbidden",
+    });
+    throw new SessionServiceError("unauthorized", "Displays cannot publish feature frames.", 401);
+  }
+  const session = getSessionOrThrow(cred.sessionId);
+  try {
+    validateEnvelope(envelope, session.lastFeatureFrameSeq);
+  } catch (error) {
+    const code = error instanceof SessionServiceError ? error.code : "invalid_request";
+    logFeatureTransportEvent({
+      operation: "publishSessionFeatures",
+      sessionId: cred.sessionId,
+      category: "validation",
+      code,
+      frameSeq: envelope.frameSeq,
+    });
+    throw error;
+  }
+
+  session.lastFeatureFrameSeq = envelope.frameSeq;
+  session.latestFeatureFrame = {
+    frameSeq: envelope.frameSeq,
+    timestampMs: envelope.timestampMs,
+    envelope,
+  };
+
+  const stamped = buildFeatureBroadcastMessage({
+    sessionId: cred.sessionId,
+    deviceId: cred.deviceId,
+    envelope,
+    sentAt: nowIso(),
+  });
+  const realtimeBroadcast = await broadcastFeatureFrame(session, stamped);
+  logFeatureTransportEvent({
+    operation: "publishSessionFeatures",
+    sessionId: cred.sessionId,
+    category: "accepted",
+    code: "stored",
+    frameSeq: envelope.frameSeq,
+    transport: realtimeBroadcast,
+  });
+  return {
+    accepted: true,
+    frameSeq: envelope.frameSeq,
+    durableFallback: "stored",
+    realtimeBroadcast,
+  };
+}
+
+export function getSessionFeaturesAfterMemory(
+  token: string,
+  afterSeq: number,
+): StoredFeatureFrame | null {
+  const cred = authorizeCredential(token);
+  const session = getSessionOrThrow(cred.sessionId);
+  const latest = session.latestFeatureFrame;
+  if (!latest || latest.frameSeq <= afterSeq) return null;
+  return latest;
+}
+
+export function recordFeatureReceiptMemory(
+  token: string,
+  body: FeatureReceiptBody,
+): FeatureReceiptResponse {
+  const cred = authorizeCredential(token);
+  if (cred.role === "controller" || cred.role === "combined") {
+    throw new SessionServiceError(
+      "unauthorized",
+      "Controllers cannot acknowledge display receipt.",
+      401,
+    );
+  }
+  getSessionOrThrow(cred.sessionId);
+  const receipt: StoredFeatureReceipt = {
+    deviceId: cred.deviceId,
+    frameSeq: body.frameSeq,
+    receivedAtMs: body.receivedAtMs,
+    transport: body.transport,
+  };
+  const session = getSessionOrThrow(cred.sessionId);
+  session.displayReceipt = receipt;
+  logFeatureTransportEvent({
+    operation: "recordFeatureReceipt",
+    sessionId: cred.sessionId,
+    category: "display_ack",
+    code: "accepted",
+    frameSeq: body.frameSeq,
+    transport: body.transport,
+  });
+  return {
+    accepted: true,
+    frameSeq: body.frameSeq,
+    transport: body.transport,
+    receivedAtMs: body.receivedAtMs,
+  };
+}
+
+export function getLatestFeatureReceiptMemory(token: string): StoredFeatureReceipt | null {
+  const cred = authorizeCredential(token);
+  const session = getSessionOrThrow(cred.sessionId);
+  return session.displayReceipt;
 }
 
 export function subscribeSession(

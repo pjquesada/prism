@@ -33,6 +33,12 @@ export function DisplaySessionPanel() {
     restore();
   }, [restore, sessionId]);
 
+  const liveListenActive = sync.snapshot?.playback.audioMode === "live_listen";
+  useEffect(() => {
+    client.setLiveFeatureConsumption(liveListenActive && sync.localRole === "display");
+    return () => client.setLiveFeatureConsumption(false);
+  }, [client, liveListenActive, sync.localRole]);
+
   const retry = () => {
     attemptedSessionRef.current = null;
     restore();

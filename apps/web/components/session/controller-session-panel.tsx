@@ -295,11 +295,18 @@ export function ControllerSessionPanel() {
   );
 
   const publishFeatureEnvelope = useCallback(
-    (envelope: AudioFeatureEnvelope) => {
-      client.publishFeatures(envelope);
-    },
+    (envelope: AudioFeatureEnvelope) => client.publishFeatures(envelope),
     [client],
   );
+
+  const captureActive =
+    sync.snapshot?.playback.audioMode === "live_listen" &&
+    (sync.localRole === "controller" || sync.localRole === "combined");
+
+  useEffect(() => {
+    client.setControllerReceiptPolling(captureActive);
+    return () => client.setControllerReceiptPolling(false);
+  }, [captureActive, client]);
 
   const stopCapture = useCallback(() => {
     const gen = ++captureGenRef.current;
@@ -652,6 +659,8 @@ export function ControllerSessionPanel() {
         captureSource={captureInput}
         subscribeFeatures={(listener) => client.subscribeFeatures(listener)}
         publishFeatures={publishFeatureEnvelope}
+        featureTransportDiagnostics={() => client.getFeatureTransportDiagnostics()}
+        realtimeChannelState={() => client.getRealtimeChannelState()}
         onStartCapture={() => {
           startCaptureFromGesture(captureInput === "demo_track" ? "browser_capture" : captureInput);
         }}

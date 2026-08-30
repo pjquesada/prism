@@ -1,12 +1,16 @@
 import type {
   AudioFeatureEnvelope,
   DeviceRole,
+  FeatureDeliveryTransport,
+  FeaturePublishResponse,
   PublicGuestIdentity,
+  RealtimeChannelState,
   SessionMessage,
   SessionSnapshot,
 } from "@prism/contracts";
 import {
   AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
+  featurePublishResponseSchema,
   publicGuestIdentitySchema,
   sessionMessageSchema,
 } from "@prism/contracts";
@@ -25,6 +29,16 @@ import {
 } from "@prism/sync-engine";
 
 import { createOptionalBrowserSupabase } from "@/lib/supabase/browser";
+import {
+  FEATURE_ACK_INTERVAL_MS,
+  FEATURE_FALLBACK_POLL_FAST_MS,
+  FEATURE_PUBLISH_MIN_INTERVAL_MS,
+  FEATURE_REALTIME_HEALTHY_MS,
+  FEATURE_RECEIPT_POLL_MS,
+  FeatureTransportMetrics,
+  type FeaturePublishOutcome,
+  type FeatureTransportDiagnostics,
+} from "@/lib/session/feature-transport-metrics";
 
 const RESTORE_TIMEOUT_MS = 12_000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -79,8 +93,19 @@ export class SessionClient {
   private supabaseChannel: { unsubscribe: () => void } | null = null;
   private realtimeStartedFor: string | null = null;
   private readonly featureListeners = new Set<(envelope: AudioFeatureEnvelope) => void>();
-  private featureInFlight: Promise<void> | null = null;
   private pendingFeature: AudioFeatureEnvelope | null = null;
+  private featureFlushActive = false;
+  private lastFeaturePublishMs = 0;
+  private readonly featureMetrics = new FeatureTransportMetrics();
+  private featureFallbackTimer: ReturnType<typeof setInterval> | null = null;
+  private featureAckTimer: ReturnType<typeof setInterval> | null = null;
+  private featureReceiptPollTimer: ReturnType<typeof setInterval> | null = null;
+  private liveFeatureConsumption = false;
+  private lastIngestedFrameSeq = -1;
+  private lastAckFrameSeq = -1;
+  private lastAckSentMs = 0;
+  private realtimeChannelState: RealtimeChannelState = "idle";
+  private lastRealtimeFeatureAtMs = 0;
   private transport: "memory" | "supabase" | null = null;
   private lastRealtimeEventAt = 0;
   private realtimeRelease: (() => void) | null = null;
@@ -323,6 +348,32 @@ export class SessionClient {
     }
   }
 
+  getFeatureTransportDiagnostics(): FeatureTransportDiagnostics {
+    this.featureMetrics.tick();
+    return { ...this.featureMetrics.diagnostics };
+  }
+
+  getRealtimeChannelState(): RealtimeChannelState {
+    return this.realtimeChannelState;
+  }
+
+  setLiveFeatureConsumption(enabled: boolean): void {
+    if (this.liveFeatureConsumption === enabled) return;
+    this.liveFeatureConsumption = enabled;
+    if (enabled) {
+      this.startFeatureFallbackLoop();
+      this.startFeatureAckLoop();
+    } else {
+      this.stopFeatureFallbackLoop();
+      this.stopFeatureAckLoop();
+    }
+  }
+
+  setControllerReceiptPolling(enabled: boolean): void {
+    if (enabled) this.startReceiptPollLoop();
+    else this.stopReceiptPollLoop();
+  }
+
   subscribeFeatures(listener: (envelope: AudioFeatureEnvelope) => void): () => void {
     this.featureListeners.add(listener);
     return () => {
@@ -330,14 +381,18 @@ export class SessionClient {
     };
   }
 
-  publishFeatures(envelope: AudioFeatureEnvelope): void {
-    if (!this.identity) return;
-    this.pendingFeature = envelope;
-    if (this.featureInFlight) return;
-    this.featureInFlight = this.flushFeaturePublish().finally(() => {
-      this.featureInFlight = null;
+  publishFeatures(envelope: AudioFeatureEnvelope): Promise<FeaturePublishOutcome> {
+    if (!this.identity) {
+      return Promise.resolve({ ok: false, errorCategory: "unauthorized", status: 401 });
+    }
+    return new Promise((resolve) => {
+      this.featurePublishWaiters.set(envelope.frameSeq, resolve);
+      this.pendingFeature = envelope;
+      void this.scheduleFeatureFlush();
     });
   }
+
+  private featurePublishWaiters = new Map<number, (outcome: FeaturePublishOutcome) => void>();
 
   async end(): Promise<void> {
     if (!this.identity) return;
@@ -368,29 +423,199 @@ export class SessionClient {
     this.disposed = true;
     this.clearConnectWatch();
     this.stopRealtime();
+    this.stopFeatureFallbackLoop();
+    this.stopFeatureAckLoop();
+    this.stopReceiptPollLoop();
     this.featureListeners.clear();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
   }
 
-  private async flushFeaturePublish(): Promise<void> {
+  private scheduleFeatureFlush(): void {
+    if (this.featureFlushActive) return;
+    this.featureFlushActive = true;
+    void this.runFeatureFlushLoop().finally(() => {
+      this.featureFlushActive = false;
+      if (this.pendingFeature) void this.scheduleFeatureFlush();
+    });
+  }
+
+  private async runFeatureFlushLoop(): Promise<void> {
     while (this.pendingFeature && this.identity && !this.disposed) {
       const envelope = this.pendingFeature;
       this.pendingFeature = null;
       const encoded = new TextEncoder().encode(JSON.stringify(envelope));
       if (encoded.byteLength > AUDIO_FEATURE_ENVELOPE_MAX_BYTES) continue;
-      try {
-        await this.publish({
-          type: "audio.features",
-          sessionId: this.identity.sessionId,
-          deviceId: this.identity.deviceId,
-          payload: envelope,
-        });
-      } catch {
-        break;
+      const now = Date.now();
+      const waitMs = FEATURE_PUBLISH_MIN_INTERVAL_MS - (now - this.lastFeaturePublishMs);
+      if (waitMs > 0) await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      const outcome = await this.publishFeatureEnvelope(envelope);
+      const waiter = this.featurePublishWaiters.get(envelope.frameSeq);
+      if (waiter) {
+        waiter(outcome);
+        this.featurePublishWaiters.delete(envelope.frameSeq);
       }
+      this.lastFeaturePublishMs = Date.now();
     }
+  }
+
+  private async publishFeatureEnvelope(
+    envelope: AudioFeatureEnvelope,
+  ): Promise<FeaturePublishOutcome> {
+    if (!this.identity) return { ok: false, errorCategory: "unauthorized", status: 401 };
+    this.featureMetrics.notePublicationAttempt();
+    try {
+      const res = await fetchWithTimeout(
+        `/api/session/${this.identity.sessionId}/features`,
+        {
+          method: "POST",
+          headers: jsonHeaders(),
+          body: JSON.stringify({ envelope }),
+        },
+        CONNECT_TIMEOUT_MS,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const category = (data?.error?.code as string | undefined) ?? `http_${res.status}`;
+        this.featureMetrics.notePublicationFailure(category);
+        return { ok: false, errorCategory: category, status: res.status };
+      }
+      const parsed = featurePublishResponseSchema.parse(data) as FeaturePublishResponse;
+      if (parsed.accepted) {
+        this.featureMetrics.notePublicationAccepted();
+        return { ok: true as const, response: parsed };
+      }
+      this.featureMetrics.notePublicationFailure(parsed.errorCategory ?? "rejected");
+      return {
+        ok: false,
+        errorCategory: parsed.errorCategory ?? "rejected",
+        status: res.status,
+      };
+    } catch {
+      this.featureMetrics.notePublicationFailure("network_error");
+      return { ok: false, errorCategory: "network_error", status: 0 };
+    }
+  }
+
+  private startFeatureFallbackLoop(): void {
+    if (this.featureFallbackTimer) return;
+    const tick = () => {
+      if (!this.identity || this.disposed || !this.liveFeatureConsumption) return;
+      if (this.identity.role === "controller" || this.identity.role === "combined") return;
+      const realtimeHealthy =
+        this.realtimeChannelState === "SUBSCRIBED" &&
+        Date.now() - this.lastRealtimeFeatureAtMs < FEATURE_REALTIME_HEALTHY_MS;
+      if (realtimeHealthy) return;
+      void this.pollFeatureFallback();
+    };
+    this.featureFallbackTimer = setInterval(tick, FEATURE_FALLBACK_POLL_FAST_MS);
+  }
+
+  private stopFeatureFallbackLoop(): void {
+    if (this.featureFallbackTimer) clearInterval(this.featureFallbackTimer);
+    this.featureFallbackTimer = null;
+  }
+
+  private async pollFeatureFallback(): Promise<void> {
+    if (!this.identity) return;
+    this.featureMetrics.noteFallbackPoll();
+    try {
+      const res = await fetch(
+        `/api/session/${this.identity.sessionId}/features?afterSeq=${this.lastIngestedFrameSeq}`,
+        { credentials: "same-origin", headers: jsonHeaders() },
+      );
+      if (res.status === 204) return;
+      if (!res.ok) return;
+      const data = (await res.json()) as { envelope: AudioFeatureEnvelope; frameSeq: number };
+      if (data.frameSeq <= this.lastIngestedFrameSeq) return;
+      this.ingestFeatureEnvelope(data.envelope, "fallback");
+    } catch {
+      // ignore transient fallback errors
+    }
+  }
+
+  private startFeatureAckLoop(): void {
+    if (this.featureAckTimer) return;
+    this.featureAckTimer = setInterval(() => {
+      void this.sendFeatureAckIfNeeded();
+    }, FEATURE_ACK_INTERVAL_MS);
+  }
+
+  private stopFeatureAckLoop(): void {
+    if (this.featureAckTimer) clearInterval(this.featureAckTimer);
+    this.featureAckTimer = null;
+  }
+
+  private async sendFeatureAckIfNeeded(): Promise<void> {
+    if (!this.identity || this.lastIngestedFrameSeq <= this.lastAckFrameSeq) return;
+    const now = Date.now();
+    if (now - this.lastAckSentMs < FEATURE_ACK_INTERVAL_MS) return;
+    const transport = this.featureMetrics.diagnostics.deliveryPath;
+    if (transport !== "realtime" && transport !== "fallback") return;
+    this.lastAckSentMs = now;
+    this.lastAckFrameSeq = this.lastIngestedFrameSeq;
+    try {
+      await fetch(`/api/session/${this.identity.sessionId}/features/receipt`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          frameSeq: this.lastIngestedFrameSeq,
+          receivedAtMs: now,
+          transport,
+        }),
+      });
+    } catch {
+      // ignore ack failures
+    }
+  }
+
+  private startReceiptPollLoop(): void {
+    if (this.featureReceiptPollTimer) return;
+    this.featureReceiptPollTimer = setInterval(() => {
+      void this.pollDisplayReceipt();
+    }, FEATURE_RECEIPT_POLL_MS);
+  }
+
+  private stopReceiptPollLoop(): void {
+    if (this.featureReceiptPollTimer) clearInterval(this.featureReceiptPollTimer);
+    this.featureReceiptPollTimer = null;
+  }
+
+  private async pollDisplayReceipt(): Promise<void> {
+    if (!this.identity) return;
+    try {
+      const res = await fetch(`/api/session/${this.identity.sessionId}/features/receipt`, {
+        credentials: "same-origin",
+        headers: jsonHeaders(),
+      });
+      if (res.status === 204) return;
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        frameSeq: number;
+        receivedAtMs: number;
+        transport: FeatureDeliveryTransport;
+      };
+      this.featureMetrics.setDisplayAck(data);
+    } catch {
+      // ignore
+    }
+  }
+
+  private ingestFeatureEnvelope(
+    envelope: AudioFeatureEnvelope,
+    transport: FeatureDeliveryTransport,
+  ): void {
+    if (envelope.frameSeq <= this.lastIngestedFrameSeq) return;
+    this.lastIngestedFrameSeq = envelope.frameSeq;
+    if (transport === "realtime") {
+      this.featureMetrics.noteRealtimeEnvelope(envelope.frameSeq);
+      this.lastRealtimeFeatureAtMs = Date.now();
+    } else {
+      this.featureMetrics.noteFallbackEnvelope(envelope.frameSeq);
+    }
+    this.emitFeatureToListeners(envelope);
   }
 
   private startRealtime(): void {
@@ -427,6 +652,7 @@ export class SessionClient {
       withCredentials: true,
     });
     this.eventSource = source;
+    this.setRealtimeChannelState("SUBSCRIBED");
     const onPayload = (event: MessageEvent<string>) => {
       try {
         this.applyRaw(JSON.parse(event.data) as unknown, "realtime");
@@ -447,7 +673,11 @@ export class SessionClient {
 
   private startSupabaseChannel(sessionId: string): void {
     const supabase = createOptionalBrowserSupabase();
-    if (!supabase) return;
+    if (!supabase) {
+      this.setRealtimeChannelState("idle");
+      return;
+    }
+    this.setRealtimeChannelState("subscribing");
     const channel = supabase.channel(`session:${sessionId}`);
     channel.on("broadcast", { event: "session-message" }, (event) => {
       const payload =
@@ -456,15 +686,27 @@ export class SessionClient {
           : event;
       this.applyRaw(payload, "realtime");
     });
-    void channel.subscribe();
+    void channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") this.setRealtimeChannelState("SUBSCRIBED");
+      else if (status === "CHANNEL_ERROR") this.setRealtimeChannelState("CHANNEL_ERROR");
+      else if (status === "TIMED_OUT") this.setRealtimeChannelState("TIMED_OUT");
+      else if (status === "CLOSED") this.setRealtimeChannelState("CLOSED");
+      else if (status === "SUBSCRIBING") this.setRealtimeChannelState("subscribing");
+    });
     this.supabaseChannel = {
       unsubscribe: () => {
         void supabase.removeChannel(channel);
+        this.setRealtimeChannelState("CLOSED");
       },
     };
   }
 
-  private emitFeature(envelope: AudioFeatureEnvelope): void {
+  private setRealtimeChannelState(state: RealtimeChannelState): void {
+    this.realtimeChannelState = state;
+    this.featureMetrics.setChannelState(state);
+  }
+
+  private emitFeatureToListeners(envelope: AudioFeatureEnvelope): void {
     noteFeatureMessage();
     for (const listener of this.featureListeners) {
       listener(envelope);
@@ -562,7 +804,7 @@ export class SessionClient {
     }
     const parsed = sessionMessageSchema.safeParse(raw);
     if (parsed.success && parsed.data.type === "audio.features") {
-      this.emitFeature(parsed.data.payload);
+      this.ingestFeatureEnvelope(parsed.data.payload, "realtime");
       return { requestSnapshot: false };
     }
     const result = applySessionMessage(this.state, raw);

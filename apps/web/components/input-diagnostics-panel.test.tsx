@@ -16,8 +16,16 @@ describe("InputDiagnosticsPanel", () => {
       metrics: {
         inputMode: "browser_capture",
         capturePermissionResult: "listening",
-        realtimeConnectionStatus: "connected",
-        envelopesPublishedPerSecond: 12,
+        restConnectionStatus: "connected",
+        realtimeChannelState: "SUBSCRIBED",
+        framesGeneratedPerSecond: 18,
+        publicationAttemptsPerSecond: 18,
+        serverAcceptedPerSecond: 17,
+        publicationFailuresPerSecond: 0,
+        realtimeEnvelopesReceivedPerSecond: 0,
+        fallbackPollsPerSecond: 0,
+        fallbackEnvelopesReceivedPerSecond: 0,
+        deliveryPath: "none",
       },
       analysis: {
         generation: 1,
@@ -44,6 +52,8 @@ describe("InputDiagnosticsPanel", () => {
     });
     expect(report).toMatch(/browser=Edge 120/);
     expect(report).toMatch(/currentRms=0.1200/);
+    expect(report).toMatch(/serverAcceptedPerSecond=17/);
+    expect(report).toMatch(/realtimeChannelState=SUBSCRIBED/);
     expect(report).not.toMatch(/secret-id|MediaStream|pairing|token|supabase/i);
   });
 
@@ -79,10 +89,18 @@ describe("InputDiagnosticsPanel", () => {
         metrics={{
           inputMode: "browser_capture",
           capturePermissionResult: "listening",
-          realtimeConnectionStatus: "connected",
-          envelopesPublishedPerSecond: 10,
+          restConnectionStatus: "connected",
+          realtimeChannelState: "SUBSCRIBED",
+          framesGeneratedPerSecond: 10,
+          publicationAttemptsPerSecond: 10,
+          serverAcceptedPerSecond: 10,
+          publicationFailuresPerSecond: 0,
+          realtimeEnvelopesReceivedPerSecond: 0,
+          fallbackPollsPerSecond: 0,
+          fallbackEnvelopesReceivedPerSecond: 0,
+          deliveryPath: "none",
         }}
-        publishFeatures={vi.fn()}
+        publishFeatures={vi.fn(async () => ({ ok: true, response: { accepted: true } }))}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /input diagnostics/i }));

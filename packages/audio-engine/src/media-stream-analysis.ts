@@ -415,7 +415,7 @@ export type MediaStreamSelfTestOptions = {
   requestAnimationFrame?: (callback: FrameRequestCallback) => number;
   cancelAnimationFrame?: (handle: number) => void;
   now?: () => number;
-  publish?: (frame: AudioFeatureFrame) => boolean;
+  publish?: (frame: AudioFeatureFrame) => boolean | Promise<boolean>;
   observeDisplay?: () => number;
 };
 
@@ -515,11 +515,13 @@ export async function runMediaStreamInputSelfTest(
 
   let published = false;
   if (options.publish) {
-    published = options.publish(frame);
+    const publishResult = options.publish(frame);
+    published =
+      publishResult instanceof Promise ? (await publishResult) === true : publishResult === true;
     stages.push({
       stage: "featurePublication",
       status: published ? "pass" : "fail",
-      detail: published ? "envelope accepted" : "publication rejected",
+      detail: published ? "server acknowledged" : "publication rejected",
     });
   } else {
     stages.push({
@@ -551,10 +553,10 @@ export function derivePipelineStageDiagnostics(input: {
   loopActive: boolean;
   currentRms: number;
   currentEnergy: number;
-  envelopesPublishedPerSecond?: number;
-  envelopesReceivedPerSecond?: number;
-  publicationHealthy?: boolean;
+  serverAcceptedPerSecond?: number;
   displayReceiptHealthy?: boolean;
+  hasDisplayPaired?: boolean;
+  displayAckRecent?: boolean;
 }): InputPipelineStageDiagnostics {
   const trackHealthy =
     input.track.present &&
@@ -565,13 +567,12 @@ export function derivePipelineStageDiagnostics(input: {
   const samplesHealthy = input.loopActive && input.currentRms >= RMS_SIGNAL_THRESHOLD;
   const extractionHealthy = input.currentEnergy > 0;
   const publicationHealthy =
-    input.publicationHealthy ??
-    (input.envelopesPublishedPerSecond !== undefined
-      ? input.envelopesPublishedPerSecond > 0
-      : false);
-  const displayHealthy =
-    input.displayReceiptHealthy ??
-    (input.envelopesReceivedPerSecond !== undefined ? input.envelopesReceivedPerSecond > 0 : false);
+    input.serverAcceptedPerSecond !== undefined ? input.serverAcceptedPerSecond > 0 : false;
+  const displayHealthy = input.displayReceiptHealthy ?? false;
+  const displayAckHealthy =
+    input.hasDisplayPaired === false
+      ? displayHealthy
+      : (input.displayAckRecent ?? false) || displayHealthy;
 
   return {
     audioTrack: trackHealthy ? "healthy" : input.track.present ? "waiting" : "failed",
@@ -594,13 +595,13 @@ export function derivePipelineStageDiagnostics(input: {
         : "not_applicable",
     featurePublication: publicationHealthy
       ? "healthy"
-      : publicationHealthy === false
+      : input.loopActive
         ? "waiting"
         : "not_applicable",
     displayReceipt:
-      input.envelopesReceivedPerSecond === undefined
+      input.displayReceiptHealthy === undefined
         ? "not_applicable"
-        : displayHealthy
+        : displayAckHealthy
           ? "healthy"
           : "waiting",
   };

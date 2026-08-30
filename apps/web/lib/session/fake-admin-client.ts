@@ -7,6 +7,8 @@ export type FakeSessionDatabase = {
   session_credentials: Row[];
   playback_state: Row[];
   active_preset_snapshots: Row[];
+  session_feature_frames: Row[];
+  session_feature_receipts: Row[];
 };
 
 const FORBIDDEN_PAIRING_KEYS = ["code", "code_hint", "plaintext_code", "pairing_code"];
@@ -20,6 +22,8 @@ export function createFakeSessionDatabase(): FakeSessionDatabase {
     session_credentials: [],
     playback_state: [],
     active_preset_snapshots: [],
+    session_feature_frames: [],
+    session_feature_receipts: [],
   };
 }
 
@@ -212,6 +216,14 @@ class FakeQuery implements PromiseLike<{
         const idx = table.findIndex(
           (row) => row.session_id === payload.session_id && row.device_id === payload.device_id,
         );
+        if (idx >= 0) {
+          table[idx] = { ...table[idx], ...this.payload };
+          return { data: table[idx], error: null };
+        }
+      }
+      if (this.table === "session_feature_frames" || this.table === "session_feature_receipts") {
+        const key = payload.session_id;
+        const idx = table.findIndex((row) => row.session_id === key);
         if (idx >= 0) {
           table[idx] = { ...table[idx], ...this.payload };
           return { data: table[idx], error: null };

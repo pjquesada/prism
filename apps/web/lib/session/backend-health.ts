@@ -110,6 +110,22 @@ export async function probeDurableSessionSchema(
     };
   }
 
+  const featureFrames = await client
+    .from("session_feature_frames")
+    .select("session_id, frame_seq, payload")
+    .limit(1);
+  if (featureFrames.error) {
+    const schema = classifySchemaProbeError(featureFrames.error);
+    return {
+      ready: false,
+      status: schema ?? "unavailable",
+      supabaseReachable: schema !== "schema_mismatch",
+      schemaCompatible: false,
+      ...base,
+      detail: "session_feature_frames probe failed",
+    };
+  }
+
   return {
     ready: true,
     status: "ready",

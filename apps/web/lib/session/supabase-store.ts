@@ -2,26 +2,30 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import {
-  AUDIO_FEATURE_ENVELOPE_MAX_BYTES,
-  AUDIO_FEATURE_ENVELOPE_STALE_MS,
   GUEST_CREDENTIAL_TTL_MS,
   PAIRING_CODE_TTL_MS,
   PAIRING_MAX_ATTEMPTS,
+  audioFeatureEnvelopeSchema,
   defaultParamsForVisualizer,
   deviceRoleSchema,
   displayModeSchema,
   mergeActivePresetSnapshot,
   publicGuestIdentitySchema,
   sessionSnapshotSchema,
+  type AudioFeatureEnvelope,
   type DeviceRole,
   type DisplayMode,
+  type FeatureDeliveryTransport,
+  type FeaturePublishResponse,
+  type FeatureReceiptBody,
+  type FeatureReceiptResponse,
   type GuestCredential,
   type PublicGuestIdentity,
   type SessionMessage,
   type SessionSnapshot,
 } from "@prism/contracts";
 import type { Json } from "@prism/db";
-import { assertPayloadSize, generatePairingCode } from "@prism/sync-engine";
+import { generatePairingCode } from "@prism/sync-engine";
 
 import { getSessionSigningSecret } from "@/lib/session/config";
 import {
@@ -32,6 +36,13 @@ import {
   timingSafeDigestEqual,
 } from "@/lib/session/crypto";
 import { logSessionBackendEvent } from "@/lib/session/backend-log";
+import {
+  buildFeatureBroadcastMessage,
+  logFeatureTransportEvent,
+  validateEnvelope,
+  type StoredFeatureFrame,
+  type StoredFeatureReceipt,
+} from "@/lib/session/feature-transport";
 import { classifyDatabaseError, classifySupabaseFailure } from "@/lib/session/db-error";
 import { SessionServiceError } from "@/lib/session/errors";
 import { safeMessageForCode } from "@/lib/session/safe-errors";
@@ -59,7 +70,6 @@ export type SessionAdminClient = {
 };
 
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
-const lastFeatureFrameSeqBySession = new Map<string, number>();
 
 type StoredCredential = GuestCredential & { secretHmac: string };
 
@@ -345,19 +355,12 @@ async function fanoutRealtimeMessage(
   client: SessionAdminClient,
   sessionId: string,
   message: SessionMessage,
-): Promise<void> {
+): Promise<"sent" | "unavailable" | "failed"> {
   if (typeof client.channel !== "function") {
-    throw new SessionServiceError(
-      "session_backend_unavailable",
-      "Realtime broadcast is unavailable.",
-      503,
-    );
+    return "unavailable";
   }
   try {
     const channel = client.channel(`session:${sessionId}`);
-    // A fresh serverless channel is not subscribed, so channel.send() may
-    // return an error instead of reaching browser subscribers. Supabase's
-    // documented httpSend path publishes through the Realtime REST endpoint.
     const result = channel.httpSend
       ? await channel.httpSend("session-message", message)
       : await channel.send({
@@ -365,9 +368,10 @@ async function fanoutRealtimeMessage(
           event: "session-message",
           payload: message,
         });
-    if (result.error) throw new Error(result.error.message ?? "realtime_broadcast_failed");
+    if (result.error) return "failed";
+    return "sent";
   } catch {
-    throw new SessionServiceError("session_backend_unavailable", "Realtime broadcast failed.", 503);
+    return "failed";
   }
 }
 
@@ -820,7 +824,6 @@ export async function publishAuthorizedMessageDurable(
     "session.patch",
     "handoff.request",
     "handoff.accept",
-    "audio.features",
   ]);
   if (controllerOnly.has(message.type) && cred.role === "display") {
     throw new SessionServiceError("unauthorized", "Displays cannot publish control events.", 401);
@@ -829,23 +832,11 @@ export async function publishAuthorizedMessageDurable(
   const now = nowIso();
 
   if (message.type === "audio.features") {
-    const age = Date.now() - message.payload.timestampMs;
-    if (age > AUDIO_FEATURE_ENVELOPE_STALE_MS || age < -5_000) {
-      throw new SessionServiceError("invalid_request", "Stale feature envelope.", 400);
-    }
-    const lastSeq = lastFeatureFrameSeqBySession.get(cred.sessionId) ?? -1;
-    if (message.payload.frameSeq <= lastSeq) {
-      throw new SessionServiceError("invalid_request", "Out-of-order feature envelope.", 400);
-    }
-    assertPayloadSize(message.payload, AUDIO_FEATURE_ENVELOPE_MAX_BYTES);
-    lastFeatureFrameSeqBySession.set(cred.sessionId, message.payload.frameSeq);
-    const stampedFeatures: SessionMessage = {
-      ...message,
-      seq: 0,
-      sentAt: now,
-    };
-    await fanoutRealtimeMessage(client, cred.sessionId, stampedFeatures);
-    return stampedFeatures;
+    throw new SessionServiceError(
+      "invalid_request",
+      "Use the /features endpoint for audio feature publication.",
+      400,
+    );
   }
 
   const seq = await bumpSessionSeq(client, cred.sessionId);
@@ -949,4 +940,196 @@ export async function publishAuthorizedMessageDurable(
 
   await fanoutRealtimeMessage(client, cred.sessionId, stamped);
   return stamped;
+}
+
+const featureFrameRowSchema = z.object({
+  session_id: z.string().uuid(),
+  frame_seq: z.coerce.number().int().nonnegative(),
+  timestamp_ms: z.coerce.number().int().nonnegative(),
+  payload: z.unknown(),
+  updated_at: z.string().min(1),
+});
+
+const featureReceiptRowSchema = z.object({
+  session_id: z.string().uuid(),
+  device_id: z.string().min(1),
+  frame_seq: z.coerce.number().int().nonnegative(),
+  received_at_ms: z.coerce.number().int().nonnegative(),
+  transport: z.enum(["realtime", "fallback"]),
+  updated_at: z.string().min(1),
+});
+
+async function loadLastFeatureSeq(client: SessionAdminClient, sessionId: string): Promise<number> {
+  const { data, error } = await client
+    .from("session_feature_frames")
+    .select("frame_seq")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+  throwIfError(error, "Failed to load feature frame.", "session_feature_frames");
+  if (!data) return -1;
+  return Number((data as { frame_seq: number }).frame_seq);
+}
+
+export async function publishSessionFeaturesDurable(
+  client: SessionAdminClient,
+  token: string,
+  envelope: AudioFeatureEnvelope,
+): Promise<FeaturePublishResponse> {
+  const cred = await authorizeCredentialDurable(client, token);
+  if (cred.role !== "controller" && cred.role !== "combined") {
+    logFeatureTransportEvent({
+      operation: "publishSessionFeatures",
+      sessionId: cred.sessionId,
+      category: "authorization",
+      code: "display_publish_forbidden",
+    });
+    throw new SessionServiceError("unauthorized", "Displays cannot publish feature frames.", 401);
+  }
+
+  const lastSeq = await loadLastFeatureSeq(client, cred.sessionId);
+  try {
+    validateEnvelope(envelope, lastSeq);
+  } catch (error) {
+    const code = error instanceof SessionServiceError ? error.code : "invalid_request";
+    logFeatureTransportEvent({
+      operation: "publishSessionFeatures",
+      sessionId: cred.sessionId,
+      category: "validation",
+      code,
+      frameSeq: envelope.frameSeq,
+    });
+    throw error;
+  }
+
+  const now = nowIso();
+  const { error: upsertError } = await client.from("session_feature_frames").upsert({
+    session_id: cred.sessionId,
+    frame_seq: envelope.frameSeq,
+    timestamp_ms: envelope.timestampMs,
+    payload: envelope as Json,
+    updated_at: now,
+  });
+  if (upsertError) {
+    const code = classifyDatabaseError(upsertError.message, upsertError.code);
+    logFeatureTransportEvent({
+      operation: "publishSessionFeatures",
+      sessionId: cred.sessionId,
+      category: "durable_upsert",
+      code,
+      frameSeq: envelope.frameSeq,
+    });
+    throw new SessionServiceError(code, safeMessageForCode(code), 503);
+  }
+
+  const stamped = buildFeatureBroadcastMessage({
+    sessionId: cred.sessionId,
+    deviceId: cred.deviceId,
+    envelope,
+    sentAt: now,
+  });
+  const realtimeBroadcast = await fanoutRealtimeMessage(client, cred.sessionId, stamped);
+  logFeatureTransportEvent({
+    operation: "publishSessionFeatures",
+    sessionId: cred.sessionId,
+    category: "accepted",
+    code: "stored",
+    frameSeq: envelope.frameSeq,
+    transport: realtimeBroadcast,
+  });
+  return {
+    accepted: true,
+    frameSeq: envelope.frameSeq,
+    durableFallback: "stored",
+    realtimeBroadcast,
+  };
+}
+
+export async function getSessionFeaturesAfterDurable(
+  client: SessionAdminClient,
+  token: string,
+  afterSeq: number,
+): Promise<StoredFeatureFrame | null> {
+  const cred = await authorizeCredentialDurable(client, token);
+  const { data, error } = await client
+    .from("session_feature_frames")
+    .select("*")
+    .eq("session_id", cred.sessionId)
+    .maybeSingle();
+  throwIfError(error, "Failed to read feature frame.", "session_feature_frames");
+  if (!data) return null;
+  const row = featureFrameRowSchema.parse(data);
+  if (row.frame_seq <= afterSeq) return null;
+  const envelope = audioFeatureEnvelopeSchema.parse(row.payload);
+  logFeatureTransportEvent({
+    operation: "getSessionFeaturesAfter",
+    sessionId: cred.sessionId,
+    category: "fallback_read",
+    code: "hit",
+    frameSeq: row.frame_seq,
+  });
+  return {
+    frameSeq: row.frame_seq,
+    timestampMs: row.timestamp_ms,
+    envelope,
+  };
+}
+
+export async function recordFeatureReceiptDurable(
+  client: SessionAdminClient,
+  token: string,
+  body: FeatureReceiptBody,
+): Promise<FeatureReceiptResponse> {
+  const cred = await authorizeCredentialDurable(client, token);
+  if (cred.role === "controller" || cred.role === "combined") {
+    throw new SessionServiceError(
+      "unauthorized",
+      "Controllers cannot acknowledge display receipt.",
+      401,
+    );
+  }
+  const now = nowIso();
+  const { error } = await client.from("session_feature_receipts").upsert({
+    session_id: cred.sessionId,
+    device_id: cred.deviceId,
+    frame_seq: body.frameSeq,
+    received_at_ms: body.receivedAtMs,
+    transport: body.transport,
+    updated_at: now,
+  });
+  throwIfError(error, "Failed to record feature receipt.", "session_feature_receipts");
+  logFeatureTransportEvent({
+    operation: "recordFeatureReceipt",
+    sessionId: cred.sessionId,
+    category: "display_ack",
+    code: "accepted",
+    frameSeq: body.frameSeq,
+    transport: body.transport,
+  });
+  return {
+    accepted: true,
+    frameSeq: body.frameSeq,
+    transport: body.transport,
+    receivedAtMs: body.receivedAtMs,
+  };
+}
+
+export async function getLatestFeatureReceiptDurable(
+  client: SessionAdminClient,
+  token: string,
+): Promise<StoredFeatureReceipt | null> {
+  const cred = await authorizeCredentialDurable(client, token);
+  const { data, error } = await client
+    .from("session_feature_receipts")
+    .select("*")
+    .eq("session_id", cred.sessionId)
+    .maybeSingle();
+  throwIfError(error, "Failed to read feature receipt.", "session_feature_receipts");
+  if (!data) return null;
+  const row = featureReceiptRowSchema.parse(data);
+  return {
+    deviceId: row.device_id,
+    frameSeq: row.frame_seq,
+    receivedAtMs: row.received_at_ms,
+    transport: row.transport as FeatureDeliveryTransport,
+  };
 }
