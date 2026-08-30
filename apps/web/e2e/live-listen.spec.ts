@@ -119,16 +119,17 @@ test.describe("Phase 1E Capture Music", () => {
       display.getByRole("button", { name: /Enable audio on this display/i }),
     ).toHaveCount(0);
 
-    const demoBroadcast = controller.waitForRequest((req) => {
-      if (req.method() !== "POST" || !req.url().includes("/broadcast")) return false;
-      const data = req.postData() ?? "";
-      return (
-        data.includes("audio.features") && data.includes("levels") && !data.includes('"bands"')
-      );
+    const demoFeaturePublish = controller.waitForResponse((res) => {
+      if (res.request().method() !== "POST" || !res.url().includes("/features")) return false;
+      const data = res.request().postData() ?? "";
+      return data.includes("levels") && !data.includes('"bands"');
     });
     await controller.getByRole("button", { name: /^Play$/i }).click();
-    const demoRequest = await demoBroadcast;
-    expect(demoRequest.postData() ?? "").not.toMatch(
+    const demoResponse = await demoFeaturePublish;
+    expect(demoResponse.ok()).toBeTruthy();
+    const demoBody = await demoResponse.json();
+    expect(demoBody.accepted).toBe(true);
+    expect(JSON.stringify(demoBody)).not.toMatch(
       /pcm|fft|microphone|MediaStream|frequencyData|getDisplayMedia/,
     );
     await expect(display.getByTestId("remote-feature-energy")).toBeVisible({ timeout: 15_000 });

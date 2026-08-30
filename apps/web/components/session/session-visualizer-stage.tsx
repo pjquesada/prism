@@ -12,6 +12,7 @@ import {
   type AudioFeatureFrame,
   type PlaybackState,
   type QualityTier,
+  type RealtimeChannelState,
   type VisualizerId,
 } from "@prism/contracts";
 import {
@@ -40,6 +41,10 @@ import {
 import { VisualizerStageFrame } from "@/components/visualizer-stage-frame";
 import { PLACEHOLDER_ARTWORK_PATH } from "@/lib/local-artwork";
 import type { CaptureInputOption } from "@/components/audio-mode-selector";
+import type {
+  FeaturePublishOutcome,
+  FeatureTransportDiagnostics,
+} from "@/lib/session/feature-transport-metrics";
 
 const DEMO_TRACK_URL = "/audio/demo-track.wav";
 const CAPTURE_PRIVACY =
@@ -62,7 +67,9 @@ type SessionVisualizerStageProps = {
   captureEngine?: CaptureEngine | null;
   captureSource?: CaptureInputOption;
   subscribeFeatures?: (listener: (envelope: AudioFeatureEnvelope) => void) => () => void;
-  publishFeatures?: (envelope: AudioFeatureEnvelope) => void;
+  publishFeatures?: (envelope: AudioFeatureEnvelope) => Promise<FeaturePublishOutcome> | void;
+  featureTransportDiagnostics?: () => FeatureTransportDiagnostics;
+  realtimeChannelState?: () => RealtimeChannelState;
   onStartCapture?: () => void;
   onStopCapture?: () => void;
   onUseMicrophone?: () => void;
@@ -96,6 +103,8 @@ export function SessionVisualizerStage({
   captureSource = "browser_capture",
   subscribeFeatures,
   publishFeatures,
+  featureTransportDiagnostics,
+  realtimeChannelState,
   onStartCapture,
   onStopCapture,
   onUseMicrophone,
@@ -122,8 +131,16 @@ export function SessionVisualizerStage({
   const [diagnosticMetrics, setDiagnosticMetrics] = useState<InputDiagnosticsMetrics>({
     inputMode: captureSource,
     capturePermissionResult: "idle",
-    realtimeConnectionStatus: sync.connection,
-    envelopesPublishedPerSecond: 0,
+    restConnectionStatus: sync.connection,
+    realtimeChannelState: "idle",
+    publicationAttemptsPerSecond: 0,
+    serverAcceptedPerSecond: 0,
+    publicationFailuresPerSecond: 0,
+    framesGeneratedPerSecond: 0,
+    realtimeEnvelopesReceivedPerSecond: 0,
+    fallbackPollsPerSecond: 0,
+    fallbackEnvelopesReceivedPerSecond: 0,
+    deliveryPath: "none",
   });
 
   useEffect(() => {
@@ -141,14 +158,14 @@ export function SessionVisualizerStage({
       if (now - lastPublishMsRef.current < AUDIO_FEATURE_ENVELOPE_INTERVAL_MS) return;
       lastPublishMsRef.current = now;
       frameSeqRef.current += 1;
-      publishFeatures(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
+      void publishFeatures(audioFeatureFrameToEnvelope(frame, frameSeqRef.current, now));
       publishCountRef.current += 1;
       const windowStart = publishWindowStartRef.current || now;
       const elapsed = Math.max(1, now - windowStart);
       if (elapsed >= 1000) {
         setDiagnosticMetrics((current) => ({
           ...current,
-          envelopesPublishedPerSecond: (publishCountRef.current * 1000) / elapsed,
+          framesGeneratedPerSecond: (publishCountRef.current * 1000) / elapsed,
         }));
         publishCountRef.current = 0;
         publishWindowStartRef.current = now;
@@ -165,14 +182,61 @@ export function SessionVisualizerStage({
   const [hasSound, setHasSound] = useState(false);
   const [inputLevel, setInputLevel] = useState(0);
 
-  const liveDiagnosticMetrics = useMemo<InputDiagnosticsMetrics>(
-    () => ({
+  const liveDiagnosticMetrics = useMemo<InputDiagnosticsMetrics>(() => {
+    const transport = featureTransportDiagnostics?.();
+    return {
       ...diagnosticMetrics,
       inputMode: captureSource,
-      realtimeConnectionStatus: sync.connection,
-    }),
-    [captureSource, diagnosticMetrics, sync.connection],
-  );
+      restConnectionStatus: sync.connection,
+      realtimeChannelState: realtimeChannelState?.() ?? transport?.realtimeChannelState ?? "idle",
+      publicationAttemptsPerSecond:
+        transport?.publicationAttemptsPerSecond ?? diagnosticMetrics.publicationAttemptsPerSecond,
+      serverAcceptedPerSecond:
+        transport?.serverAcceptedPerSecond ?? diagnosticMetrics.serverAcceptedPerSecond,
+      publicationFailuresPerSecond:
+        transport?.publicationFailuresPerSecond ?? diagnosticMetrics.publicationFailuresPerSecond,
+      lastPublicationErrorCategory: transport?.lastPublicationErrorCategory ?? null,
+      realtimeEnvelopesReceivedPerSecond: transport?.realtimeEnvelopesReceivedPerSecond ?? 0,
+      fallbackPollsPerSecond: transport?.fallbackPollsPerSecond ?? 0,
+      fallbackEnvelopesReceivedPerSecond: transport?.fallbackEnvelopesReceivedPerSecond ?? 0,
+      lastReceivedFrameSeq: transport?.lastReceivedFrameSeq ?? -1,
+      msSinceLastDisplayReceipt: transport?.msSinceLastDisplayReceipt ?? null,
+      deliveryPath: transport?.deliveryPath ?? "none",
+      lastDisplayAckFrameSeq: transport?.lastDisplayAckFrameSeq ?? null,
+      lastDisplayAckAtMs: transport?.lastDisplayAckAtMs ?? null,
+      lastDisplayAckTransport: transport?.lastDisplayAckTransport ?? null,
+    };
+  }, [
+    captureSource,
+    diagnosticMetrics,
+    featureTransportDiagnostics,
+    realtimeChannelState,
+    sync.connection,
+  ]);
+
+  useEffect(() => {
+    if (!featureTransportDiagnostics) return;
+    const id = window.setInterval(() => {
+      const transport = featureTransportDiagnostics();
+      setDiagnosticMetrics((current) => ({
+        ...current,
+        publicationAttemptsPerSecond: transport.publicationAttemptsPerSecond,
+        serverAcceptedPerSecond: transport.serverAcceptedPerSecond,
+        publicationFailuresPerSecond: transport.publicationFailuresPerSecond,
+        lastPublicationErrorCategory: transport.lastPublicationErrorCategory,
+        realtimeEnvelopesReceivedPerSecond: transport.realtimeEnvelopesReceivedPerSecond,
+        fallbackPollsPerSecond: transport.fallbackPollsPerSecond,
+        fallbackEnvelopesReceivedPerSecond: transport.fallbackEnvelopesReceivedPerSecond,
+        lastReceivedFrameSeq: transport.lastReceivedFrameSeq,
+        msSinceLastDisplayReceipt: transport.msSinceLastDisplayReceipt,
+        deliveryPath: transport.deliveryPath,
+        lastDisplayAckFrameSeq: transport.lastDisplayAckFrameSeq,
+        lastDisplayAckAtMs: transport.lastDisplayAckAtMs,
+        lastDisplayAckTransport: transport.lastDisplayAckTransport,
+      }));
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [featureTransportDiagnostics]);
 
   const preset: ActivePresetSnapshot | null = snapshot?.preset ?? null;
   const visualizerId: VisualizerId =

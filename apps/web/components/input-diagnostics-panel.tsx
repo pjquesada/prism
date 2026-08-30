@@ -10,25 +10,43 @@ import {
   type LiveListenEngine,
   type MediaStreamAnalysisDiagnostics,
 } from "@prism/audio-engine";
-import type { AudioFeatureEnvelope } from "@prism/contracts";
+import type {
+  AudioFeatureEnvelope,
+  FeatureDeliveryPath,
+  RealtimeChannelState,
+} from "@prism/contracts";
 import { audioFeatureFrameToEnvelope } from "@prism/contracts";
+
+import type { FeaturePublishOutcome } from "@/lib/session/feature-transport-metrics";
 
 export type InputDiagnosticsCaptureEngine = BrowserCaptureEngine | LiveListenEngine;
 
 export type InputDiagnosticsMetrics = {
   inputMode: string;
   capturePermissionResult: string;
-  realtimeConnectionStatus: string;
-  envelopesPublishedPerSecond: number;
-  envelopesReceivedPerSecond?: number;
-  lastDisplayReceiptMs?: number | null;
+  restConnectionStatus: string;
+  realtimeChannelState: RealtimeChannelState;
+  framesGeneratedPerSecond: number;
+  publicationAttemptsPerSecond: number;
+  serverAcceptedPerSecond: number;
+  publicationFailuresPerSecond: number;
+  lastPublicationErrorCategory?: string | null;
+  realtimeEnvelopesReceivedPerSecond: number;
+  fallbackPollsPerSecond: number;
+  fallbackEnvelopesReceivedPerSecond: number;
+  lastReceivedFrameSeq?: number;
+  msSinceLastDisplayReceipt?: number | null;
+  deliveryPath: FeatureDeliveryPath;
+  lastDisplayAckFrameSeq?: number | null;
+  lastDisplayAckAtMs?: number | null;
+  lastDisplayAckTransport?: string | null;
   lastErrorCategory?: string | null;
 };
 
 type InputDiagnosticsPanelProps = {
   engine: InputDiagnosticsCaptureEngine | null;
   metrics: InputDiagnosticsMetrics;
-  publishFeatures?: (envelope: AudioFeatureEnvelope) => void;
+  publishFeatures?: (envelope: AudioFeatureEnvelope) => Promise<FeaturePublishOutcome> | void;
   observeDisplayReceipt?: () => number;
 };
 
@@ -89,9 +107,21 @@ export function buildInputDiagnosticReport(input: {
     `peakRms=${(input.analysis?.loop.peakRms ?? 0).toFixed(4)}`,
     `currentEnergy=${(input.analysis?.loop.currentEnergy ?? 0).toFixed(4)}`,
     `featureFramesPerSecond=${Math.round(input.analysis?.loop.framesPerSecond ?? 0)}`,
-    `envelopesPublishedPerSecond=${Math.round(input.metrics.envelopesPublishedPerSecond)}`,
-    `realtimeConnection=${input.metrics.realtimeConnectionStatus}`,
-    `envelopesReceivedPerSecond=${Math.round(input.metrics.envelopesReceivedPerSecond ?? 0)}`,
+    `framesGeneratedPerSecond=${Math.round(input.metrics.framesGeneratedPerSecond)}`,
+    `publicationAttemptsPerSecond=${Math.round(input.metrics.publicationAttemptsPerSecond)}`,
+    `serverAcceptedPerSecond=${Math.round(input.metrics.serverAcceptedPerSecond)}`,
+    `publicationFailuresPerSecond=${Math.round(input.metrics.publicationFailuresPerSecond)}`,
+    `restConnection=${input.metrics.restConnectionStatus}`,
+    `realtimeChannelState=${input.metrics.realtimeChannelState}`,
+    `realtimeEnvelopesReceivedPerSecond=${Math.round(input.metrics.realtimeEnvelopesReceivedPerSecond)}`,
+    `fallbackPollsPerSecond=${Math.round(input.metrics.fallbackPollsPerSecond)}`,
+    `fallbackEnvelopesReceivedPerSecond=${Math.round(input.metrics.fallbackEnvelopesReceivedPerSecond)}`,
+    `lastReceivedFrameSeq=${input.metrics.lastReceivedFrameSeq ?? -1}`,
+    `msSinceLastDisplayReceipt=${input.metrics.msSinceLastDisplayReceipt ?? "none"}`,
+    `deliveryPath=${input.metrics.deliveryPath}`,
+    `lastDisplayAckFrameSeq=${input.metrics.lastDisplayAckFrameSeq ?? "none"}`,
+    `lastDisplayAckTransport=${input.metrics.lastDisplayAckTransport ?? "none"}`,
+    `lastPublicationErrorCategory=${input.metrics.lastPublicationErrorCategory ?? "none"}`,
     `lastErrorCategory=${input.metrics.lastErrorCategory ?? "none"}`,
   ];
   if (input.stages) {
@@ -128,7 +158,7 @@ function detectBrowser(): { name: string; version: string; os: string } {
   if (chrome) return { name: "Chrome", version: chrome[1] ?? "unknown", os: platform };
   if (firefox) return { name: "Firefox", version: firefox[1] ?? "unknown", os: platform };
   if (safari) return { name: "Safari", version: safari[1] ?? "unknown", os: platform };
-  return { name: "unknown", version: "unknown", os: platform };
+  return { name: "unknown", version: "unknown", os: "unknown" };
 }
 
 export function InputDiagnosticsPanel({
@@ -156,12 +186,18 @@ export function InputDiagnosticsPanel({
         loopActive: analysis?.loop.active ?? false,
         currentRms: analysis?.loop.currentRms ?? 0,
         currentEnergy: analysis?.loop.currentEnergy ?? 0,
-        envelopesPublishedPerSecond: metrics.envelopesPublishedPerSecond,
-        envelopesReceivedPerSecond: metrics.envelopesReceivedPerSecond,
-        publicationHealthy: metrics.envelopesPublishedPerSecond > 0,
-        displayReceiptHealthy: (metrics.envelopesReceivedPerSecond ?? 0) > 0,
+        serverAcceptedPerSecond: metrics.serverAcceptedPerSecond,
+        displayReceiptHealthy:
+          (metrics.realtimeEnvelopesReceivedPerSecond ?? 0) +
+            (metrics.fallbackEnvelopesReceivedPerSecond ?? 0) >
+          0,
+        hasDisplayPaired: metrics.lastDisplayAckFrameSeq !== null,
+        displayAckRecent:
+          metrics.lastDisplayAckAtMs !== null &&
+          metrics.lastDisplayAckAtMs !== undefined &&
+          (metrics.msSinceLastDisplayReceipt ?? Number.MAX_SAFE_INTEGER) < 3_000,
       }),
-    [analysis, metrics.envelopesPublishedPerSecond, metrics.envelopesReceivedPerSecond],
+    [analysis, metrics],
   );
 
   const browser = detectBrowser();
@@ -194,13 +230,11 @@ export function InputDiagnosticsPanel({
     try {
       const result = await runMediaStreamInputSelfTest({
         publish: publishFeatures
-          ? (frame) => {
-              try {
-                publishFeatures(audioFeatureFrameToEnvelope(frame, 1, Date.now()));
-                return true;
-              } catch {
-                return false;
-              }
+          ? async (frame) => {
+              const envelope = audioFeatureFrameToEnvelope(frame, 1, Date.now());
+              const outcome = await publishFeatures(envelope);
+              if (!outcome || typeof outcome !== "object" || !("ok" in outcome)) return false;
+              return outcome.ok === true;
             }
           : undefined,
         observeDisplay: observeDisplayReceipt,
@@ -258,15 +292,19 @@ export function InputDiagnosticsPanel({
               </dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide">Feature / publish rate</dt>
+              <dt className="text-xs uppercase tracking-wide">Feature / server ack</dt>
               <dd>
                 {Math.round(analysis?.loop.framesPerSecond ?? 0)} fps ·{" "}
-                {Math.round(metrics.envelopesPublishedPerSecond)} env/s
+                {Math.round(metrics.serverAcceptedPerSecond)} ack/s
               </dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide">Realtime</dt>
-              <dd>{metrics.realtimeConnectionStatus}</dd>
+              <dt className="text-xs uppercase tracking-wide">Realtime channel</dt>
+              <dd>{metrics.realtimeChannelState}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide">Delivery path</dt>
+              <dd>{metrics.deliveryPath}</dd>
             </div>
           </dl>
 

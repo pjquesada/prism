@@ -63,6 +63,29 @@ export {
 } from "./features.js";
 
 export {
+  durableFallbackResultSchema,
+  featureDeliveryPathSchema,
+  featureDeliveryTransportSchema,
+  featureFallbackQuerySchema,
+  featureFallbackResponseSchema,
+  featurePublishBodySchema,
+  featurePublishResponseSchema,
+  featureReceiptBodySchema,
+  featureReceiptResponseSchema,
+  realtimeBroadcastResultSchema,
+  realtimeChannelStateSchema,
+  type DurableFallbackResult,
+  type FeatureDeliveryPath,
+  type FeatureDeliveryTransport,
+  type FeatureFallbackResponse,
+  type FeaturePublishResponse,
+  type FeatureReceiptBody,
+  type FeatureReceiptResponse,
+  type RealtimeBroadcastResult,
+  type RealtimeChannelState,
+} from "./feature-transport.js";
+
+export {
   FORBIDDEN_SESSION_PAYLOAD_KEYS,
   GUEST_CREDENTIAL_TTL_MS,
   MAX_PRESET_PARAMS_JSON_BYTES,
